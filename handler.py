@@ -2,11 +2,7 @@
 RunPod Serverless Handler – MultiTalk (alive_and_speak)
 Upstream: https://github.com/MeiGen-AI/MultiTalk
 
-Models expected at /workspace/weights/ (set via env vars to override):
-  /workspace/weights/Wan2.1-I2V-14B-480P/
-  /workspace/weights/chinese-wav2vec2-base/
-  /workspace/weights/Kokoro-82M/
-  /workspace/weights/MeiGen-MultiTalk/
+
 
 Input schema:
 {
