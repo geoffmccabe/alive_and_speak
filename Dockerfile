@@ -1,7 +1,6 @@
 
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
-# ── Build-time defaults ──────────────────────────────────────────
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
