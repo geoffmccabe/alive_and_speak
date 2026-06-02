@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     MAX_JOBS=4 \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0"
 
 # System packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,15 +38,15 @@ RUN pip install --upgrade pip setuptools wheel
 WORKDIR /app
 RUN git clone --depth 1 https://github.com/saif816/alive_and_speak /app
 
-# PyTorch CUDA 12.1
+# Upgrade to PyTorch 2.5.1 (Fixes the infer_schema type-hint validation bug)
 RUN pip install \
-        torch==2.4.1 \
-        torchvision==0.19.1 \
-        torchaudio==2.4.1 \
+        torch==2.5.1 \
+        torchvision==0.20.1 \
+        torchaudio==2.5.1 \
         --index-url https://download.pytorch.org/whl/cu121
 
-# xformers
-RUN pip install xformers==0.0.28 \
+# Matching xformers version for PyTorch 2.5.1
+RUN pip install xformers==0.0.28.post3 \
         --extra-index-url https://download.pytorch.org/whl/cu121
 
 # Core deps
@@ -59,11 +59,11 @@ RUN pip install \
         requests \
         librosa
 
-# flash-attn
-RUN pip install flash_attn==2.7.4.post1 --no-build-isolation
-
-# Repo Python dependencies
+# Repo Python dependencies (Installed before flash-attn to prevent overwriting versions)
 RUN pip install -r /app/requirements.txt
+
+# flash-attn compiled against the upgraded PyTorch stack
+RUN pip install flash_attn==2.7.4.post1 --no-build-isolation
 
 # Runtime directories
 RUN mkdir -p /tmp/multitalk_outputs \
