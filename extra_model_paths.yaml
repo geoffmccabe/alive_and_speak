@@ -1,2 +1,5 @@
 comfyui:
   base_path: /runpod-volume/weights
+  diffusion_models: .
+  text_encoders: .
+  vae: .
