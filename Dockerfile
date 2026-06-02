@@ -5,18 +5,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    VENV_DIR=/opt/venv \
     MAX_JOBS=4 \
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
 
-ENV PATH="${VENV_DIR}/bin:${PATH}"
-
 # System packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.10 \
-        python3.10-dev \
-        python3.10-venv \
+        python3 \
+        python3-dev \
         python3-pip \
+        python3-venv \
         wget \
         git \
         curl \
@@ -30,28 +27,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Virtual environment
-RUN python3.10 -m venv "${VENV_DIR}" \
-    && python -m pip install --upgrade pip setuptools wheel
+# Create virtual env
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
 
+# Upgrade pip tools
+RUN pip install --upgrade pip setuptools wheel
+
+# Clone alive_and_speak repo
 WORKDIR /app
-
-# Copy app code
-COPY . /app
+RUN git clone --depth 1 https://github.com/saif816/alive_and_speak /app
 
 # PyTorch CUDA 12.1
-RUN python -m pip install \
+RUN pip install \
         torch==2.4.1 \
         torchvision==0.19.1 \
         torchaudio==2.4.1 \
         --index-url https://download.pytorch.org/whl/cu121
 
 # xformers
-RUN python -m pip install xformers==0.0.28 \
+RUN pip install xformers==0.0.28 \
         --extra-index-url https://download.pytorch.org/whl/cu121
 
-# Core build/runtime deps
-RUN python -m pip install \
+# Core deps
+RUN pip install \
         ninja \
         psutil \
         packaging \
@@ -61,21 +60,21 @@ RUN python -m pip install \
         librosa
 
 # flash-attn
-RUN python -m pip install flash_attn==2.7.4.post1 --no-build-isolation
+RUN pip install flash_attn==2.7.4.post1 --no-build-isolation
 
-# Repo dependencies
-RUN python -m pip install -r /app/requirements.txt
+# Repo Python dependencies
+RUN pip install -r /app/requirements.txt
 
 # Runtime directories
 RUN mkdir -p /tmp/multitalk_outputs \
              /comfyui/ComfyUI
 
-# Extra model path config
+# App files
+COPY handler.py /app/handler.py
+COPY start.sh /start.sh
 COPY extra_model_paths.yaml /comfyui/extra_model_paths.yaml
 COPY extra_model_paths.yaml /comfyui/ComfyUI/extra_model_paths.yaml
 
-# Start script
-COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
 CMD ["/start.sh"]
