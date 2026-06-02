@@ -48,7 +48,7 @@ import runpod
 #  Model paths — all under /workspace/weights/
 #  Override any via RunPod environment variables
 # ─────────────────────────────────────────────────────────────────
-WEIGHTS_ROOT   = os.environ.get("WEIGHTS_ROOT",   "/workspace/weights")
+WEIGHTS_ROOT   = os.environ.get("WEIGHTS_ROOT",   "/runpod-volume/weights")
 CKPT_DIR       = os.environ.get("CKPT_DIR",       f"{WEIGHTS_ROOT}/Wan2.1-I2V-14B-480P")
 WAV2VEC_DIR    = os.environ.get("WAV2VEC_DIR",    f"{WEIGHTS_ROOT}/chinese-wav2vec2-base")
 KOKORO_DIR     = os.environ.get("KOKORO_DIR",     f"{WEIGHTS_ROOT}/Kokoro-82M")
