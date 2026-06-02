@@ -1,12 +1,7 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════
 #  start.sh – Container entrypoint for MultiTalk RunPod Serverless
-#
-#  Models expected at: /workspace/weights/
-#    /workspace/weights/Wan2.1-I2V-14B-480P/
-#    /workspace/weights/chinese-wav2vec2-base/
-#    /workspace/weights/Kokoro-82M/
-#    /workspace/weights/MeiGen-MultiTalk/
+
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
