@@ -14,7 +14,7 @@ echo "╔═══════════════════════�
 echo "║  MultiTalk – RunPod Serverless Worker                    ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 
-WEIGHTS_ROOT="${WEIGHTS_ROOT:-/workspace/weights}"
+WEIGHTS_ROOT="${WEIGHTS_ROOT:-//runpod-volume/weights}"
 CKPT_DIR="${CKPT_DIR:-${WEIGHTS_ROOT}/Wan2.1-I2V-14B-480P}"
 MULTITALK_DIR="${MULTITALK_DIR:-${WEIGHTS_ROOT}/MeiGen-MultiTalk}"
 
