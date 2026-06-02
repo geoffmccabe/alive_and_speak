@@ -1,28 +1,36 @@
 """
 RunPod Serverless Handler – MultiTalk (alive_and_speak)
+Upstream: https://github.com/MeiGen-AI/MultiTalk
+
+Models expected at /workspace/weights/ (set via env vars to override):
+  /workspace/weights/Wan2.1-I2V-14B-480P/
+  /workspace/weights/chinese-wav2vec2-base/
+  /workspace/weights/Kokoro-82M/
+  /workspace/weights/MeiGen-MultiTalk/
 
 Input schema:
 {
-    "image_url":    "https://…/person.jpg",          # required
-    "audio_urls":   ["https://…/speech.wav"],         # required (audio_mode=audio)
+    "image_url":    "https://…/person.jpg",          # REQUIRED
+    "audio_urls":   ["https://…/speech.wav"],         # required if audio_mode=audio
     "prompt":       "A person talking naturally",      # optional
     "negative_prompt": "blurry, distorted face",       # optional
     "audio_mode":   "audio" | "tts",                  # default: audio
-    "tts_texts":    ["Hello world"],                   # required when audio_mode=tts
-    "audio_type":   "para",                           # multi-person sync mode
-    "mode":         "streaming",                      # default: streaming
+    "tts_texts":    ["Hello world"],                   # required if audio_mode=tts
+    "audio_type":   "para",                           # multi-speaker (default: para)
+    "mode":         "streaming" | "clip",             # default: streaming
     "sample_steps": 40,                               # default: 40
-    "size":         "multitalk-480",                  # default: multitalk-480
+    "size":         "multitalk-480" | "multitalk-720",# default: multitalk-480
     "use_teacache": true,                             # default: true
-    "sample_text_guide_scale":  5.0,
-    "sample_audio_guide_scale": 4.0,
-    "teacache_thresh":          0.3,
-    "num_persistent_param_in_dit": 0,
-    "sample_shift": null,
-    "lora_dir":     "",
+    "use_apg":      false,                            # default: false
+    "sample_text_guide_scale":     5.0,               # 1.0 when using LoRA
+    "sample_audio_guide_scale":    4.0,               # 2.0 when using LoRA
+    "teacache_thresh":             0.3,               # range 0.2–0.5
+    "num_persistent_param_in_dit": 0,                 # 0 = low-VRAM mode
+    "sample_shift": null,                             # set 2 when using LoRA
+    "lora_dir":     "",                               # path to LoRA .safetensors
     "lora_scale":   1.0,
-    "quant":        "",
-    "quant_dir":    ""
+    "quant":        "",                               # "int8" to enable quantization
+    "quant_dir":    ""                                # defaults to MeiGen-MultiTalk dir
 }
 """
 
@@ -37,16 +45,17 @@ from pathlib import Path
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
-#  Environment / model paths
+#  Model paths — all under /workspace/weights/
+#  Override any via RunPod environment variables
 # ─────────────────────────────────────────────────────────────────
-CKPT_DIR = os.environ.get(
-    "CKPT_DIR", "/runpod-volume/models/Wan2.1-I2V-14B-480P"
-)
-WAV2VEC_DIR = os.environ.get(
-    "WAV2VEC_DIR", "/runpod-volume/models/chinese-wav2vec2-base"
-)
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/tmp/multitalk_outputs")
-GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "900"))  # 15 min
+WEIGHTS_ROOT   = os.environ.get("WEIGHTS_ROOT",   "/workspace/weights")
+CKPT_DIR       = os.environ.get("CKPT_DIR",       f"{WEIGHTS_ROOT}/Wan2.1-I2V-14B-480P")
+WAV2VEC_DIR    = os.environ.get("WAV2VEC_DIR",    f"{WEIGHTS_ROOT}/chinese-wav2vec2-base")
+KOKORO_DIR     = os.environ.get("KOKORO_DIR",     f"{WEIGHTS_ROOT}/Kokoro-82M")
+MULTITALK_DIR  = os.environ.get("MULTITALK_DIR",  f"{WEIGHTS_ROOT}/MeiGen-MultiTalk")
+
+OUTPUT_DIR          = os.environ.get("OUTPUT_DIR",          "/tmp/multitalk_outputs")
+GENERATION_TIMEOUT  = int(os.environ.get("GENERATION_TIMEOUT", "900"))   # 15 min
 
 SIGNED_UPLOAD_ENDPOINT: str = os.environ.get(
     "SIGNED_UPLOAD_ENDPOINT",
@@ -105,27 +114,21 @@ def upload_video(video_path: str, job_id: str) -> dict:
 
 
 def find_output_video(save_stem: str) -> str | None:
-    """
-    generate_multitalk.py saves as {save_stem}.mp4.
-    In streaming mode it may write chunks then concatenate in-place.
-    Try a few candidate paths.
-    """
+    """Find the .mp4 written by generate_multitalk.py."""
     for suffix in ["", "_out", "_final", "_0"]:
         p = f"{save_stem}{suffix}.mp4"
         if os.path.exists(p) and os.path.getsize(p) > 0:
             return p
-
-    # Glob fallback in OUTPUT_DIR
+    # Glob fallback
     stem_name = Path(save_stem).name
     for p in sorted(Path(OUTPUT_DIR).glob(f"{stem_name}*.mp4")):
         if p.stat().st_size > 0:
             return str(p)
-
     return None
 
 
 # ─────────────────────────────────────────────────────────────────
-#  Handler
+#  Main handler
 # ─────────────────────────────────────────────────────────────────
 def handler(job: dict) -> dict:
     job_id = job["id"]
@@ -158,10 +161,8 @@ def handler(job: dict) -> dict:
         if audio_mode == "audio":
             audio_urls = inp.get("audio_urls") or inp.get("audio_url")
             if not audio_urls:
-                return {
-                    "error": "'audio_urls' is required when audio_mode='audio'",
-                    "job_id": job_id,
-                }
+                return {"error": "'audio_urls' is required when audio_mode='audio'",
+                        "job_id": job_id}
             if isinstance(audio_urls, str):
                 audio_urls = [audio_urls]
 
@@ -172,12 +173,14 @@ def handler(job: dict) -> dict:
                     download_file(url, a_path)
                     audio_paths.append(a_path)
                 except Exception as exc:
-                    return {
-                        "error": f"Audio[{i}] download failed: {exc}",
-                        "job_id": job_id,
-                    }
+                    return {"error": f"Audio[{i}] download failed: {exc}",
+                            "job_id": job_id}
 
-        # ── 3. Build input JSON for generate_multitalk.py ─────────
+        elif audio_mode != "tts":
+            return {"error": f"Unknown audio_mode '{audio_mode}'. Use 'audio' or 'tts'.",
+                    "job_id": job_id}
+
+        # ── 3. input.json for generate_multitalk.py ───────────────
         prompt     = inp.get("prompt", "A person talking naturally and expressively")
         neg_prompt = inp.get("negative_prompt", "distorted face, blurry, low quality")
 
@@ -190,24 +193,22 @@ def handler(job: dict) -> dict:
         if audio_mode == "audio":
             if len(audio_paths) == 1:
                 gen_input["audio_path"] = audio_paths[0]
-            elif len(audio_paths) == 2:
+            else:
                 gen_input["audio_path"]   = audio_paths[0]
                 gen_input["audio_path_2"] = audio_paths[1]
                 gen_input["audio_type"]   = inp.get("audio_type", "para")
+
         elif audio_mode == "tts":
             tts_texts = inp.get("tts_texts", [])
             if not tts_texts:
-                return {
-                    "error": "'tts_texts' is required when audio_mode='tts'",
-                    "job_id": job_id,
-                }
+                return {"error": "'tts_texts' is required when audio_mode='tts'",
+                        "job_id": job_id}
             if isinstance(tts_texts, str):
                 tts_texts = [tts_texts]
             gen_input["audio_path"] = tts_texts[0]
             if len(tts_texts) > 1:
                 gen_input["audio_path_2"] = tts_texts[1]
-        else:
-            return {"error": f"Unknown audio_mode: {audio_mode}", "job_id": job_id}
+                gen_input["audio_type"]   = inp.get("audio_type", "para")
 
         input_json = str(tmp / "input.json")
         with open(input_json, "w") as fh:
@@ -220,6 +221,7 @@ def handler(job: dict) -> dict:
         sample_steps    = int(inp.get("sample_steps", 40))
         size            = inp.get("size", "multitalk-480")
         use_teacache    = bool(inp.get("use_teacache", True))
+        use_apg         = bool(inp.get("use_apg", False))
         num_persistent  = int(inp.get("num_persistent_param_in_dit", 0))
         txt_guide       = float(inp.get("sample_text_guide_scale", 5.0))
         aud_guide       = float(inp.get("sample_audio_guide_scale", 4.0))
@@ -228,11 +230,9 @@ def handler(job: dict) -> dict:
         lora_dir        = inp.get("lora_dir") or os.environ.get("LORA_DIR", "")
         lora_scale      = float(inp.get("lora_scale", 1.0))
         quant           = inp.get("quant", "")
-        quant_dir       = inp.get("quant_dir") or os.environ.get(
-            "QUANT_DIR", "/runpod-volume/models/MeiGen-MultiTalk"
-        )
+        quant_dir       = inp.get("quant_dir") or MULTITALK_DIR
 
-        # ── 5. Assemble CLI command ───────────────────────────────
+        # ── 5. Build CLI command ──────────────────────────────────
         cmd: list[str] = [
             sys.executable,                    "/app/generate_multitalk.py",
             "--ckpt_dir",                      CKPT_DIR,
@@ -250,8 +250,11 @@ def handler(job: dict) -> dict:
 
         if use_teacache:
             cmd.append("--use_teacache")
+        if use_apg:
+            cmd.append("--use_apg")
         if audio_mode == "tts":
             cmd += ["--audio_mode", "tts"]
+            cmd += ["--kokoro_dir", KOKORO_DIR]   # explicit absolute path
         if lora_dir:
             cmd += ["--lora_dir", lora_dir, "--lora_scale", str(lora_scale)]
         if quant:
@@ -271,10 +274,8 @@ def handler(job: dict) -> dict:
                 timeout=GENERATION_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
-            return {
-                "error":   f"Generation timed out after {GENERATION_TIMEOUT}s",
-                "job_id":  job_id,
-            }
+            return {"error": f"Generation timed out after {GENERATION_TIMEOUT}s",
+                    "job_id": job_id}
 
         log(f"  Return code: {proc.returncode}")
         if proc.stdout:
@@ -291,25 +292,25 @@ def handler(job: dict) -> dict:
                 "job_id":     job_id,
             }
 
-        # ── 7. Locate output video ────────────────────────────────
+        # ── 7. Find output video ──────────────────────────────────
         video_path = find_output_video(save_stem)
         if not video_path:
             return {
                 "error":               "Output video not found after generation",
                 "save_stem":           save_stem,
                 "output_dir_contents": [str(p) for p in Path(OUTPUT_DIR).iterdir()],
+                "stdout_tail":         proc.stdout[-500:],
                 "job_id":              job_id,
             }
 
-        log(f"  ✓ Output found: {video_path}")
+        log(f"  ✓ Output: {video_path}")
 
-        # ── 8. Upload to Supabase signed endpoint ─────────────────
+        # ── 8. Upload ─────────────────────────────────────────────
         try:
             upload_result = upload_video(video_path, job_id)
         except Exception as exc:
             return {"error": f"Upload failed: {exc}", "job_id": job_id}
         finally:
-            # Clean up output file(s) for this job
             for p in Path(OUTPUT_DIR).glob(f"{job_id}*"):
                 try:
                     p.unlink()
@@ -323,8 +324,5 @@ def handler(job: dict) -> dict:
         }
 
 
-# ─────────────────────────────────────────────────────────────────
-#  Entry point
-# ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler})
