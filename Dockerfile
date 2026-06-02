@@ -1,7 +1,4 @@
-# ═══════════════════════════════════════════════════════════════════
-#  MultiTalk (alive_and_speak) – RunPod Serverless Image
-#  Base: CUDA 12.1.1 + cuDNN 8 + Ubuntu 22.04
-# ═══════════════════════════════════════════════════════════════════
+
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 # ── Build-time defaults ──────────────────────────────────────────
