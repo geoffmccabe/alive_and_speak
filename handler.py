@@ -1,12 +1,6 @@
 """
 RunPod Serverless Handler – MultiTalk (alive_and_speak)
 Upstream https://github.com/MeiGen-AI/MultiTalk
-
-SPEED TIPS (A100 80GB):
-  - offload_model=false  → keeps model in GPU VRAM, no CPU roundtrips
-  - quant=int8           → cuts memory bandwidth, faster DiT steps
-  - mode=streaming       → chunked generation, low latency processing
-  - sample_steps=15      → fast inference, good enough for testing
 """
 
 import os
@@ -20,7 +14,7 @@ from pathlib import Path
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
-#  Model paths
+#  Model Paths & Environment Configuration
 # ─────────────────────────────────────────────────────────────────
 WEIGHTS_ROOT  = os.environ.get("WEIGHTS_ROOT",  "/runpod-volume/weights")
 CKPT_DIR      = os.environ.get("CKPT_DIR",      f"{WEIGHTS_ROOT}/Wan2.1-I2V-14B-480P")
@@ -32,14 +26,17 @@ OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/multitalk_output
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "18000"))
 
 # ─────────────────────────────────────────────────────────────────
-#  Upload config (Security Fixed: No exposed token fallback)
+#  Supabase Upload Configuration
 # ─────────────────────────────────────────────────────────────────
 SIGNED_UPLOAD_ENDPOINT: str = os.environ.get(
     "SIGNED_UPLOAD_ENDPOINT",
     "https://kabdqrzcewkzbjmeqmxx.supabase.co/functions/v1/runpod-signed-upload",
 )
 
-RUNPOD_UPLOAD_SECRET: str = os.environ.get("RUNPOD_UPLOAD_SECRET", "67mN2pQ9xR4vT8wY3zA5bC6dE1fG0hJ4kL8nM2oP6qS9t")
+RUNPOD_UPLOAD_SECRET: str = os.environ.get(
+    "RUNPOD_UPLOAD_SECRET",
+    "67mN2pQ9xR4vT8wY3zA5bC6dE1fG0hJ4kL8nM2oP6qS9t",
+)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -58,7 +55,6 @@ def apply_runtime_hotfixes() -> None:
     """
     log("🔧 Applying runtime environment hotfixes...")
 
-    # 1. Patch wav2vec2.py script inline to explicit 'eager' implementation
     script_path = "/app/src/audio_analysis/wav2vec2.py"
     if os.path.exists(script_path):
         try:
@@ -79,7 +75,6 @@ def apply_runtime_hotfixes() -> None:
         except Exception as e:
             log(f"   ⚠ Failed to patch script file: {e}")
 
-    # 2. Patch model configuration json file on disk if available
     config_path = os.path.join(WAV2VEC_DIR, "config.json")
     if os.path.exists(config_path):
         try:
@@ -109,50 +104,79 @@ def download_file(url: str, dest: str, timeout: int = 180) -> str:
 
 
 def upload_video(video_path: str, job_id: str) -> dict:
-    log(f"  ⬆  Uploading {video_path} …")
+    """
+    Fetches a pre-signed direct upload URL from the Supabase Edge Function,
+    then streams the binary file via PUT directly to the storage bucket.
+    This fully resolves HTTP 504 timeouts on massive files.
+    """
+    log(f"  ⬆  Initiating multi-stage pre-signed upload for {video_path} …")
     mb = os.path.getsize(video_path) / 1_000_000
     log(f"     Size : {mb:.1f} MB")
-    log(f"     URL  : {SIGNED_UPLOAD_ENDPOINT}")
+    filename = f"{job_id}.mp4"
 
-    if not RUNPOD_UPLOAD_SECRET:
-        log("❌ ERROR: RUNPOD_UPLOAD_SECRET environment variable is missing or empty!")
-        return {
-            "upload_error": "Missing Secret Key Configuration",
-            "upload_response": "Ensure RUNPOD_UPLOAD_SECRET is passed to the RunPod environment variables.",
-            "video_url": "",
-        }
-
-    with open(video_path, "rb") as fh:
-        resp = requests.post(
+    try:
+        # Step 1: Request a direct signed token URL from the Edge Function proxy
+        log("     Fetching upload token from Edge Function...")
+        token_resp = requests.post(
             SIGNED_UPLOAD_ENDPOINT,
             headers={
                 "Authorization": f"Bearer {RUNPOD_UPLOAD_SECRET}",
-                "Content-Type":  "video/mp4",
-                "X-Job-Id":      job_id,
-                "X-Filename":    f"{job_id}.mp4",
+                "Content-Type":  "application/json",
             },
-            data=fh,
-            timeout=300,
+            json={"filename": filename},
+            timeout=30
         )
 
-    log(f"     HTTP {resp.status_code}")
+        if not token_resp.ok:
+            return {
+                "upload_error":   f"Failed token generation: HTTP {token_resp.status_code}",
+                "upload_response": token_resp.text[:1000],
+                "video_url":      "",
+            }
 
-    if not resp.ok:
+        urls = token_resp.json()
+        upload_url = urls.get("uploadUrl")
+        public_url = urls.get("publicUrl")
+
+        if not upload_url or not public_url:
+            return {
+                "upload_error":   "Malformed token response structure from storage proxy",
+                "upload_response": urls,
+                "video_url":      "",
+            }
+
+        # Step 2: Directly upload the file binary stream into the storage engine via PUT
+        log("     Streaming binary payload straight to Supabase Storage Bucket...")
+        with open(video_path, "rb") as fh:
+            storage_resp = requests.put(
+                upload_url,
+                headers={"Content-Type": "video/mp4"},
+                data=fh,
+                timeout=600  # Generous 10-minute timeout for slow file chunk pushes
+            )
+
+        log(f"     Storage Engine HTTP {storage_resp.status_code}")
+
+        if storage_resp.ok:
+            log(f"     ✓ Upload Complete! Public Access Link: {public_url}")
+            return {
+                "video_url":       public_url, 
+                "upload_response": {"status": "success", "url": public_url}
+            }
+        else:
+            return {
+                "upload_error":   f"Storage backend rejected payload: HTTP {storage_resp.status_code}",
+                "upload_response": storage_resp.text[:1000],
+                "video_url":      "",
+            }
+
+    except Exception as e:
+        log(f"  ❌ Upload network failure: {str(e)}")
         return {
-            "upload_error":   f"HTTP {resp.status_code}",
-            "upload_response": resp.text[:1000],
-            "video_url":      "",
+            "upload_error": "Network/Timeout exception during multi-stage upload sequence",
+            "upload_response": str(e),
+            "video_url": "",
         }
-
-    payload = resp.json()
-    video_url = (
-        payload.get("url")
-        or payload.get("publicUrl")
-        or payload.get("signedUrl")
-        or ""
-    )
-    log(f"     ✓ {video_url}")
-    return {"video_url": video_url, "upload_response": payload}
 
 
 def find_output_video(save_stem: str) -> str | None:
@@ -168,13 +192,11 @@ def find_output_video(save_stem: str) -> str | None:
 
 
 # ─────────────────────────────────────────────────────────────────
-#  Main handler
+#  Main Handler
 # ─────────────────────────────────────────────────────────────────
 def handler(job: dict) -> dict:
-    # Always enforce the explicit code level patches before processing fields
     apply_runtime_hotfixes()
 
-    # Apply configuration variables fallback
     os.environ["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
     os.environ["TORCH_ATTN_IMPLEMENTATION"] = "eager"
 
@@ -204,7 +226,7 @@ def handler(job: dict) -> dict:
         # ── 2. Prepare audio ──────────────────────────────────────
         audio_mode = inp.get("audio_mode", "audio")
 
-        # ── 3. Build input JSON (exact keys the script expects) ───
+        # ── 3. Build input JSON for the backend script ────────────
         prompt     = inp.get("prompt", "A person talking naturally and expressively")
         neg_prompt = inp.get("negative_prompt", "distorted face, blurry, low quality")
 
@@ -215,17 +237,11 @@ def handler(job: dict) -> dict:
         }
 
         if audio_mode == "audio":
-            raw_audio = inp.get("audio_url") or inp.get("audio_urls")
-            if not raw_audio:
-                return {"error": "'audio_url' or 'audio_urls' required when audio_mode='audio'", "job_id": job_id}
-            
-            # Robust Bug Fix: Enforce structured serialization for lists or raw strings safely
-            if isinstance(raw_audio, list):
-                audio_urls = list(raw_audio)
-            elif isinstance(raw_audio, str):
-                audio_urls = [raw_audio]
-            else:
-                audio_urls = [str(raw_audio)]
+            audio_urls = inp.get("audio_urls") or inp.get("audio_url")
+            if not audio_urls:
+                return {"error": "'audio_urls' required when audio_mode='audio'", "job_id": job_id}
+            if isinstance(audio_urls, str):
+                audio_urls = [audio_urls]
 
             audio_paths: list[str] = []
             for i, url in enumerate(audio_urls[:2]):
@@ -255,11 +271,9 @@ def handler(job: dict) -> dict:
                 tts_texts = [tts_texts]
 
             voice_defaults = ["af_heart", "am_adam"]
-            
             resolved_voices = []
             for i in range(len(tts_texts[:2])):
                 voice_name = tts_voices[i] if i < len(tts_voices) else voice_defaults[min(i, 1)]
-                
                 if voice_name.startswith("/") or voice_name.startswith("."):
                     resolved_voices.append(voice_name)
                 else:
@@ -288,11 +302,10 @@ def handler(job: dict) -> dict:
         input_json = str(tmp / "input.json")
         with open(input_json, "w") as fh:
             json.dump(gen_input, fh, indent=2)
-        log(f"  input.json:\n{json.dumps(gen_input, indent=4)}\n")
 
-        # ── 4. Generation parameters ──────────────────────────────
-        save_stem      = str(Path(OUTPUT_DIR) / job_id)
-        audio_save_dir = str(tmp / "save_audio")
+        # ── 4. Parameter Gathering ──────────────────────────────
+        save_stem       = str(Path(OUTPUT_DIR) / job_id)
+        audio_save_dir  = str(tmp / "save_audio")
         os.makedirs(audio_save_dir, exist_ok=True)
 
         mode            = inp.get("mode", "streaming")
@@ -309,11 +322,9 @@ def handler(job: dict) -> dict:
         lora_scale      = float(inp.get("lora_scale", 1.0))
         quant           = inp.get("quant", "")
         quant_dir       = inp.get("quant_dir") or MULTITALK_DIR
+        offload_choice  = inp.get("offload_model", True)
 
-        # Performance Boost: Dynamically inject --offload_model to keep weights locked inside VRAM
-        offload_choice  = inp.get("offload_model", False)
-
-        # ── 5. CLI command ────────────────────────────────────────
+        # ── 5. Build Command List ─────────────────────────────────
         cmd: list[str] = [
             sys.executable,                    "/app/generate_multitalk.py",
             "--ckpt_dir",                      CKPT_DIR,
@@ -330,7 +341,6 @@ def handler(job: dict) -> dict:
             "--save_file",                     save_stem,
         ]
 
-        # Explicit toggle to override MultiTalk's inner CPU-offloading defaults
         if offload_choice is False or str(offload_choice).lower() == "false":
             cmd.extend(["--offload_model", "False"])
         else:
@@ -351,11 +361,11 @@ def handler(job: dict) -> dict:
 
         log(f"  Command:\n  {' '.join(cmd)}\n")
 
-        # ── 6. Run generation with real-time log streaming ────────
+        # ── 6. Run Subprocess with Real-Time Log Streaming ────────
         subprocess_env = os.environ.copy()
         subprocess_env["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
         subprocess_env["TORCH_ATTN_IMPLEMENTATION"] = "eager"
-        subprocess_env["PYTHONUNBUFFERED"] = "1"  # Force unbuffered live stream tracking
+        subprocess_env["PYTHONUNBUFFERED"] = "1"
 
         start_time = time.time()
         output_lines = []
@@ -380,10 +390,7 @@ def handler(job: dict) -> dict:
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         proc.kill()
-                    return {
-                        "error": f"Generation timed out after {GENERATION_TIMEOUT}s",
-                        "job_id": job_id
-                    }
+                    return {"error": f"Generation timed out after {GENERATION_TIMEOUT}s", "job_id": job_id}
 
                 line = proc.stdout.readline()
                 if not line and proc.poll() is not None:
@@ -395,10 +402,7 @@ def handler(job: dict) -> dict:
             return_code = proc.wait()
 
         except Exception as e:
-            return {
-                "error": f"Subprocess execution failed: {str(e)}",
-                "job_id": job_id,
-            }
+            return {"error": f"Subprocess execution failed: {str(e)}", "job_id": job_id}
 
         log(f"  Return code: {return_code}")
         full_output = "".join(output_lines)
@@ -412,7 +416,7 @@ def handler(job: dict) -> dict:
                 "job_id":     job_id,
             }
 
-        # ── 7. Find output video ──────────────────────────────────
+        # ── 7. Find Output Video ──────────────────────────────────
         video_path = find_output_video(save_stem)
         if not video_path:
             return {
@@ -423,20 +427,20 @@ def handler(job: dict) -> dict:
                 "job_id":              job_id,
             }
 
-        log(f"  ✓ Output: {video_path}")
+        log(f"  ✓ Found Output Video Local Path: {video_path}")
 
-        # ── 8. Upload with secret ─────────────────────────────────
+        # ── 8. Upload to Supabase Storage ─────────────────────────
         upload_result = upload_video(video_path, job_id)
 
-        # Bug Fix: Selective local cleanup prevents file loss if Supabase drops the upload
-        if upload_result.get("upload_error"):
+        # Retain local file inside OUTPUT_DIR if upload fails for manual debug extraction
+        if upload_result.get("upload_error") or not upload_result.get("video_url"):
             return {
-                "status":  "upload_failed",
-                "job_id":  job_id,
-                **upload_result,
+                "status": "upload_failed",
+                "job_id": job_id,
+                **upload_result
             }
 
-        # Success path cleanup
+        # Success path cleanup: delete local file to reclaim storage space
         for p in Path(OUTPUT_DIR).glob(f"{job_id}*"):
             try:
                 p.unlink()
@@ -444,9 +448,10 @@ def handler(job: dict) -> dict:
                 pass
 
         return {
-            "status":  "success",
-            "job_id":  job_id,
-            **upload_result,
+            "status":          "success",
+            "job_id":          job_id,
+            "video_url":       upload_result["video_url"],
+            "upload_response": upload_result["upload_response"]
         }
 
 
