@@ -39,7 +39,7 @@ SIGNED_UPLOAD_ENDPOINT: str = os.environ.get(
     "https://kabdqrzcewkzbjmeqmxx.supabase.co/functions/v1/runpod-signed-upload",
 )
 
-RUNPOD_UPLOAD_SECRET: str = os.environ.get("RUNPOD_UPLOAD_SECRET", "")
+RUNPOD_UPLOAD_SECRET: str = os.environ.get("RUNPOD_UPLOAD_SECRET", "67mN2pQ9xR4vT8wY3zA5bC6dE1fG0hJ4kL8nM2oP6qS9t")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
