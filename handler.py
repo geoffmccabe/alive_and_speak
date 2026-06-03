@@ -2,7 +2,6 @@
 RunPod Serverless Handler – MultiTalk (alive_and_speak)
 Upstream https://github.com/MeiGen-AI/MultiTalk
 """
-
 import os
 import sys
 import json
