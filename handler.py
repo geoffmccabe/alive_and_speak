@@ -85,7 +85,6 @@ def upload_video(video_path: str, job_id: str) -> dict:
 
     log(f"     HTTP {resp.status_code}")
 
-    # Surface the raw response body on failure so we can debug
     if not resp.ok:
         return {
             "upload_error":   f"HTTP {resp.status_code}",
@@ -120,6 +119,9 @@ def find_output_video(save_stem: str) -> str | None:
 #  Main handler
 # ─────────────────────────────────────────────────────────────────
 def handler(job: dict) -> dict:
+    # Fix transformers SDPA ValueError globally within this worker execution thread
+    os.environ["TORCH_ATTN_IMPLEMENTATION"] = "eager"
+
     job_id = job["id"]
     inp    = job["input"]
 
@@ -194,23 +196,32 @@ def handler(job: dict) -> dict:
                 tts_texts = [tts_texts]
 
             voice_defaults = ["af_heart", "am_adam"]
-            voices = [
-                tts_voices[i] if i < len(tts_voices) else voice_defaults[min(i, 1)]
-                for i in range(len(tts_texts[:2]))
-            ]
+            
+            # Match short-name identifiers to absolute weight path URLs inside the 'voices' subfolder
+            resolved_voices = []
+            for i in range(len(tts_texts[:2])):
+                voice_name = tts_voices[i] if i < len(tts_voices) else voice_defaults[min(i, 1)]
+                
+                if voice_name.startswith("/") or voice_name.startswith("."):
+                    resolved_voices.append(voice_name)
+                else:
+                    if not voice_name.endswith(".pt") and not voice_name.endswith(".pth"):
+                        voice_name = f"{voice_name}.pt"
+                    # Corrected to point directly into the 'voices' subfolder
+                    resolved_voices.append(os.path.join(KOKORO_DIR, "voices", voice_name))
 
             if len(tts_texts) == 1:
                 gen_input["tts_audio"] = {
                     "text":         tts_texts[0],
-                    "human1_voice": voices[0],
+                    "human1_voice": resolved_voices[0],
                 }
                 gen_input["cond_audio"] = {"person1": ""}
             else:
                 gen_input["tts_audio"] = {
                     "text1":        tts_texts[0],
                     "text2":        tts_texts[1],
-                    "human1_voice": voices[0],
-                    "human2_voice": voices[1],
+                    "human1_voice": resolved_voices[0],
+                    "human2_voice": resolved_voices[1],
                 }
                 gen_input["cond_audio"] = {"person1": "", "person2": ""}
                 gen_input["audio_type"] = inp.get("audio_type", "para")
@@ -325,7 +336,6 @@ def handler(job: dict) -> dict:
             except Exception:
                 pass
 
-        # If upload failed, still return what we have
         if upload_result.get("upload_error"):
             return {
                 "status":  "upload_failed",
