@@ -42,10 +42,55 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────
-#  Helpers
+#  Helpers & Hotfixes
 # ─────────────────────────────────────────────────────────────────
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def apply_runtime_hotfixes() -> None:
+    """
+    Safely applies hotfixes to codebase scripts and configurations to bypass
+    Hugging Face SDPA/Eager attention conflicts during runtime.
+    """
+    log("🔧 Applying runtime environment hotfixes...")
+
+    # 1. Patch wav2vec2.py script inline to explicit 'eager' implementation
+    script_path = "/app/src/audio_analysis/wav2vec2.py"
+    if os.path.exists(script_path):
+        try:
+            with open(script_path, "r") as f:
+                code = f.read()
+            if 'attn_implementation = "eager"' not in code:
+                old_stmt = "self.config.output_attentions = True"
+                new_stmt = 'self.config.attn_implementation = "eager"\n        self.config.output_attentions = True'
+                if old_stmt in code:
+                    code = code.replace(old_stmt, new_stmt)
+                    with open(script_path, "w") as f:
+                        f.write(code)
+                    log("   ✓ Code patch successfully applied to wav2vec2.py")
+                else:
+                    log("   ⚠ Target statement not found in wav2vec2.py")
+            else:
+                log("   ✓ wav2vec2.py script already has hotfix applied.")
+        except Exception as e:
+            log(f"   ⚠ Failed to patch script file: {e}")
+
+    # 2. Patch model configuration json file on disk if available
+    config_path = os.path.join(WAV2VEC_DIR, "config.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+            if cfg.get("attn_implementation") != "eager":
+                cfg["attn_implementation"] = "eager"
+                with open(config_path, "w") as f:
+                    json.dump(cfg, f, indent=2)
+                log("   ✓ Model config.json patched to force 'eager' attention.")
+            else:
+                log("   ✓ Model config.json is already configured correctly.")
+        except Exception as e:
+            log(f"   ⚠ Failed to update configuration file: {e}")
 
 
 def download_file(url: str, dest: str, timeout: int = 180) -> str:
@@ -61,10 +106,6 @@ def download_file(url: str, dest: str, timeout: int = 180) -> str:
 
 
 def upload_video(video_path: str, job_id: str) -> dict:
-    """
-    Upload generated video to the Supabase signed endpoint.
-    Authenticates with RUNPOD_UPLOAD_SECRET as Bearer token.
-    """
     log(f"  ⬆  Uploading {video_path} …")
     mb = os.path.getsize(video_path) / 1_000_000
     log(f"     Size : {mb:.1f} MB")
@@ -119,7 +160,10 @@ def find_output_video(save_stem: str) -> str | None:
 #  Main handler
 # ─────────────────────────────────────────────────────────────────
 def handler(job: dict) -> dict:
-    # Set correct environment variables to force eager attention mode for transformers
+    # Always enforce the explicit code level patches before processing fields
+    apply_runtime_hotfixes()
+
+    # Apply configuration variables fallback
     os.environ["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
     os.environ["TORCH_ATTN_IMPLEMENTATION"] = "eager"
 
@@ -198,7 +242,6 @@ def handler(job: dict) -> dict:
 
             voice_defaults = ["af_heart", "am_adam"]
             
-            # Match short-name identifiers to absolute weight path URLs inside the 'voices' subfolder
             resolved_voices = []
             for i in range(len(tts_texts[:2])):
                 voice_name = tts_voices[i] if i < len(tts_voices) else voice_defaults[min(i, 1)]
@@ -262,7 +305,7 @@ def handler(job: dict) -> dict:
             "--audio_save_dir",                audio_save_dir,
             "--sample_steps",                  str(sample_steps),
             "--mode",                          mode,
-            "--size",                          size,
+            "--size", size,
             "--num_persistent_param_in_dit",   str(num_persistent),
             "--sample_text_guide_scale",       str(txt_guide),
             "--sample_audio_guide_scale",      str(aud_guide),
@@ -286,7 +329,6 @@ def handler(job: dict) -> dict:
         log(f"  Command:\n  {' '.join(cmd)}\n")
 
         # ── 6. Run generation ─────────────────────────────────────
-        # Explicitly forward the eager environment setup down to the spawned script execution
         subprocess_env = os.environ.copy()
         subprocess_env["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
         subprocess_env["TORCH_ATTN_IMPLEMENTATION"] = "eager"
