@@ -280,7 +280,7 @@ def handler(job: dict) -> dict:
         os.makedirs(audio_save_dir, exist_ok=True)
 
         mode            = inp.get("mode", "streaming")
-        sample_steps    = int(inp.get("sample_steps", 40))
+        sample_steps    = int(inp.get("sample_steps", 15))
         size            = inp.get("size", "multitalk-480")
         use_teacache    = bool(inp.get("use_teacache", True))
         use_apg         = bool(inp.get("use_apg", False))
