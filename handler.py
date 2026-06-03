@@ -2,6 +2,7 @@
 RunPod Serverless Handler – MultiTalk (alive_and_speak)
 Upstream https://github.com/MeiGen-AI/MultiTalk
 """
+
 import os
 import sys
 import json
@@ -118,7 +119,8 @@ def find_output_video(save_stem: str) -> str | None:
 #  Main handler
 # ─────────────────────────────────────────────────────────────────
 def handler(job: dict) -> dict:
-    # Fix transformers SDPA ValueError globally within this worker execution thread
+    # Set correct environment variables to force eager attention mode for transformers
+    os.environ["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
     os.environ["TORCH_ATTN_IMPLEMENTATION"] = "eager"
 
     job_id = job["id"]
@@ -206,7 +208,6 @@ def handler(job: dict) -> dict:
                 else:
                     if not voice_name.endswith(".pt") and not voice_name.endswith(".pth"):
                         voice_name = f"{voice_name}.pt"
-                    # Corrected to point directly into the 'voices' subfolder
                     resolved_voices.append(os.path.join(KOKORO_DIR, "voices", voice_name))
 
             if len(tts_texts) == 1:
@@ -285,10 +286,16 @@ def handler(job: dict) -> dict:
         log(f"  Command:\n  {' '.join(cmd)}\n")
 
         # ── 6. Run generation ─────────────────────────────────────
+        # Explicitly forward the eager environment setup down to the spawned script execution
+        subprocess_env = os.environ.copy()
+        subprocess_env["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
+        subprocess_env["TORCH_ATTN_IMPLEMENTATION"] = "eager"
+
         try:
             proc = subprocess.run(
                 cmd,
                 cwd="/app",
+                env=subprocess_env,
                 capture_output=True,
                 text=True,
                 timeout=GENERATION_TIMEOUT,
