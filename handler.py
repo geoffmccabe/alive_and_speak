@@ -5,6 +5,7 @@ Upstream https://github.com/MeiGen-AI/MultiTalk
 import os
 import sys
 import json
+import time
 import requests
 import tempfile
 import subprocess
@@ -21,7 +22,7 @@ KOKORO_DIR    = os.environ.get("KOKORO_DIR",    f"{WEIGHTS_ROOT}/Kokoro-82M")
 MULTITALK_DIR = os.environ.get("MULTITALK_DIR", f"{WEIGHTS_ROOT}/MeiGen-MultiTalk")
 
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/multitalk_outputs")
-GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "900"))
+GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "18000"))
 
 # ─────────────────────────────────────────────────────────────────
 #  Upload config
@@ -326,36 +327,65 @@ def handler(job: dict) -> dict:
 
         log(f"  Command:\n  {' '.join(cmd)}\n")
 
-        # ── 6. Run generation ─────────────────────────────────────
+        # ── 6. Run generation with real-time log streaming ────────
         subprocess_env = os.environ.copy()
         subprocess_env["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
         subprocess_env["TORCH_ATTN_IMPLEMENTATION"] = "eager"
+        subprocess_env["PYTHONUNBUFFERED"] = "1"  # Force unbuffered terminal loops
 
+        start_time = time.time()
+        output_lines = []
+
+        log("🚀 Launching generation subprocess...")
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 cwd="/app",
                 env=subprocess_env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=GENERATION_TIMEOUT,
+                bufsize=1,  # Line-buffered delivery
             )
-        except subprocess.TimeoutExpired:
-            return {"error": f"Generation timed out after {GENERATION_TIMEOUT}s",
-                    "job_id": job_id}
 
-        log(f"  Return code: {proc.returncode}")
-        if proc.stdout:
-            log(f"  STDOUT:\n{proc.stdout[-3000:]}")
-        if proc.stderr:
-            log(f"  STDERR:\n{proc.stderr[-3000:]}")
+            while True:
+                # Watchdog constraint evaluation
+                if time.time() - start_time > GENERATION_TIMEOUT:
+                    log(f"❌ Subprocess exceeded GENERATION_TIMEOUT of {GENERATION_TIMEOUT}s. Terminating...")
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    return {
+                        "error": f"Generation timed out after {GENERATION_TIMEOUT}s",
+                        "job_id": job_id
+                    }
 
-        if proc.returncode != 0:
+                line = proc.stdout.readline()
+                if not line and proc.poll() is not None:
+                    break
+                if line:
+                    log(line.rstrip("\r\n"))
+                    output_lines.append(line)
+
+            return_code = proc.wait()
+
+        except Exception as e:
+            return {
+                "error": f"Subprocess execution failed: {str(e)}",
+                "job_id": job_id,
+            }
+
+        log(f"  Return code: {return_code}")
+        full_output = "".join(output_lines)
+
+        if return_code != 0:
             return {
                 "error":      "Video generation failed",
-                "returncode": proc.returncode,
-                "stderr":     proc.stderr[-4000:],
-                "stdout":     proc.stdout[-2000:],
+                "returncode": return_code,
+                "stderr":     full_output[-4000:],
+                "stdout":     full_output[-2000:],
                 "job_id":     job_id,
             }
 
@@ -366,7 +396,7 @@ def handler(job: dict) -> dict:
                 "error":               "Output video not found after generation",
                 "save_stem":           save_stem,
                 "output_dir_contents": [str(p) for p in Path(OUTPUT_DIR).iterdir()],
-                "stdout_tail":         proc.stdout[-500:],
+                "stdout_tail":         full_output[-500:],
                 "job_id":              job_id,
             }
 
