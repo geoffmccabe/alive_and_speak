@@ -1,7 +1,14 @@
 """
 RunPod Serverless Handler – MultiTalk (alive_and_speak)
 Upstream https://github.com/MeiGen-AI/MultiTalk
+
+SPEED TIPS (A100 80GB):
+  - offload_model=false  → keeps model in GPU VRAM, no CPU roundtrips
+  - quant=int8           → cuts memory bandwidth, faster DiT steps
+  - mode=streaming       → chunked generation, low latency processing
+  - sample_steps=15      → fast inference, good enough for testing
 """
+
 import os
 import sys
 import json
@@ -11,6 +18,7 @@ import tempfile
 import subprocess
 from pathlib import Path
 import runpod
+
 # ─────────────────────────────────────────────────────────────────
 #  Model paths
 # ─────────────────────────────────────────────────────────────────
@@ -24,17 +32,14 @@ OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/multitalk_output
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "18000"))
 
 # ─────────────────────────────────────────────────────────────────
-#  Upload config
+#  Upload config (Security Fixed: No exposed token fallback)
 # ─────────────────────────────────────────────────────────────────
 SIGNED_UPLOAD_ENDPOINT: str = os.environ.get(
     "SIGNED_UPLOAD_ENDPOINT",
     "https://kabdqrzcewkzbjmeqmxx.supabase.co/functions/v1/runpod-signed-upload",
 )
 
-RUNPOD_UPLOAD_SECRET: str = os.environ.get(
-    "RUNPOD_UPLOAD_SECRET",
-    "67mN2pQ9xR4vT8wY3zA5bC6dE1fG0hJ4kL8nM2oP6qS9t",
-)
+RUNPOD_UPLOAD_SECRET: str = os.environ.get("RUNPOD_UPLOAD_SECRET", "")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -109,6 +114,14 @@ def upload_video(video_path: str, job_id: str) -> dict:
     log(f"     Size : {mb:.1f} MB")
     log(f"     URL  : {SIGNED_UPLOAD_ENDPOINT}")
 
+    if not RUNPOD_UPLOAD_SECRET:
+        log("❌ ERROR: RUNPOD_UPLOAD_SECRET environment variable is missing or empty!")
+        return {
+            "upload_error": "Missing Secret Key Configuration",
+            "upload_response": "Ensure RUNPOD_UPLOAD_SECRET is passed to the RunPod environment variables.",
+            "video_url": "",
+        }
+
     with open(video_path, "rb") as fh:
         resp = requests.post(
             SIGNED_UPLOAD_ENDPOINT,
@@ -169,8 +182,8 @@ def handler(job: dict) -> dict:
     inp    = job["input"]
 
     log(f"\n{'═' * 60}")
-    log(f"  Job  : {job_id}")
-    log(f"  Keys : {list(inp.keys())}")
+    log(f"   Job  : {job_id}")
+    log(f"   Keys : {list(inp.keys())}")
     log(f"{'═' * 60}\n")
 
     with tempfile.TemporaryDirectory(prefix=f"mt_{job_id}_") as _tmp:
@@ -202,12 +215,17 @@ def handler(job: dict) -> dict:
         }
 
         if audio_mode == "audio":
-            audio_urls = inp.get("audio_urls") or inp.get("audio_url")
-            if not audio_urls:
-                return {"error": "'audio_urls' required when audio_mode='audio'",
-                        "job_id": job_id}
-            if isinstance(audio_urls, str):
-                audio_urls = [audio_urls]
+            raw_audio = inp.get("audio_url") or inp.get("audio_urls")
+            if not raw_audio:
+                return {"error": "'audio_url' or 'audio_urls' required when audio_mode='audio'", "job_id": job_id}
+            
+            # Robust Bug Fix: Enforce structured serialization for lists or raw strings safely
+            if isinstance(raw_audio, list):
+                audio_urls = list(raw_audio)
+            elif isinstance(raw_audio, str):
+                audio_urls = [raw_audio]
+            else:
+                audio_urls = [str(raw_audio)]
 
             audio_paths: list[str] = []
             for i, url in enumerate(audio_urls[:2]):
@@ -217,8 +235,7 @@ def handler(job: dict) -> dict:
                     download_file(url, a_path)
                     audio_paths.append(a_path)
                 except Exception as exc:
-                    return {"error": f"Audio[{i}] download failed: {exc}",
-                            "job_id": job_id}
+                    return {"error": f"Audio[{i}] download failed: {exc}", "job_id": job_id}
 
             if len(audio_paths) == 1:
                 gen_input["cond_audio"] = {"person1": audio_paths[0]}
@@ -233,8 +250,7 @@ def handler(job: dict) -> dict:
             tts_texts  = inp.get("tts_texts", [])
             tts_voices = inp.get("tts_voices", [])
             if not tts_texts:
-                return {"error": "'tts_texts' required when audio_mode='tts'",
-                        "job_id": job_id}
+                return {"error": "'tts_texts' required when audio_mode='tts'", "job_id": job_id}
             if isinstance(tts_texts, str):
                 tts_texts = [tts_texts]
 
@@ -294,6 +310,9 @@ def handler(job: dict) -> dict:
         quant           = inp.get("quant", "")
         quant_dir       = inp.get("quant_dir") or MULTITALK_DIR
 
+        # Performance Boost: Dynamically inject --offload_model to keep weights locked inside VRAM
+        offload_choice  = inp.get("offload_model", False)
+
         # ── 5. CLI command ────────────────────────────────────────
         cmd: list[str] = [
             sys.executable,                    "/app/generate_multitalk.py",
@@ -303,13 +322,19 @@ def handler(job: dict) -> dict:
             "--audio_save_dir",                audio_save_dir,
             "--sample_steps",                  str(sample_steps),
             "--mode",                          mode,
-            "--size", size,
+            "--size",                          size,
             "--num_persistent_param_in_dit",   str(num_persistent),
             "--sample_text_guide_scale",       str(txt_guide),
             "--sample_audio_guide_scale",      str(aud_guide),
             "--teacache_thresh",               str(teacache_thresh),
             "--save_file",                     save_stem,
         ]
+
+        # Explicit toggle to override MultiTalk's inner CPU-offloading defaults
+        if offload_choice is False or str(offload_choice).lower() == "false":
+            cmd.extend(["--offload_model", "False"])
+        else:
+            cmd.extend(["--offload_model", "True"])
 
         if use_teacache:
             cmd.append("--use_teacache")
@@ -330,7 +355,7 @@ def handler(job: dict) -> dict:
         subprocess_env = os.environ.copy()
         subprocess_env["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
         subprocess_env["TORCH_ATTN_IMPLEMENTATION"] = "eager"
-        subprocess_env["PYTHONUNBUFFERED"] = "1"  # Force unbuffered terminal loops
+        subprocess_env["PYTHONUNBUFFERED"] = "1"  # Force unbuffered live stream tracking
 
         start_time = time.time()
         output_lines = []
@@ -344,11 +369,10 @@ def handler(job: dict) -> dict:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1,  # Line-buffered delivery
+                bufsize=1,
             )
 
             while True:
-                # Watchdog constraint evaluation
                 if time.time() - start_time > GENERATION_TIMEOUT:
                     log(f"❌ Subprocess exceeded GENERATION_TIMEOUT of {GENERATION_TIMEOUT}s. Terminating...")
                     proc.terminate()
@@ -404,19 +428,20 @@ def handler(job: dict) -> dict:
         # ── 8. Upload with secret ─────────────────────────────────
         upload_result = upload_video(video_path, job_id)
 
-        # Cleanup
-        for p in Path(OUTPUT_DIR).glob(f"{job_id}*"):
-            try:
-                p.unlink()
-            except Exception:
-                pass
-
+        # Bug Fix: Selective local cleanup prevents file loss if Supabase drops the upload
         if upload_result.get("upload_error"):
             return {
                 "status":  "upload_failed",
                 "job_id":  job_id,
                 **upload_result,
             }
+
+        # Success path cleanup
+        for p in Path(OUTPUT_DIR).glob(f"{job_id}*"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
 
         return {
             "status":  "success",
