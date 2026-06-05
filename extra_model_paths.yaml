@@ -1,5 +1,5 @@
 comfyui:
-  base_path: /runpod-volume/weights
+  base_path: /runpod-volume/weights/float
   diffusion_models: .
   text_encoders: .
   vae: .
