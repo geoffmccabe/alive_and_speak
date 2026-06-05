@@ -48,18 +48,6 @@ GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "300"))  # 5 min p
 os.environ["TRANSFORMERS_CACHE"] = FLOAT_WEIGHTS
 os.environ["HF_HOME"] = FLOAT_WEIGHTS
 
-# ─────────────────────────────────────────────────────────────────
-#  Upload config
-# ─────────────────────────────────────────────────────────────────
-SIGNED_UPLOAD_ENDPOINT: str = os.environ.get(
-    "SIGNED_UPLOAD_ENDPOINT",
-    "https://kabdqrzcewkzbjmeqmxx.supabase.co/functions/v1/runpod-signed-upload",
-)
-RUNPOD_UPLOAD_SECRET: str = os.environ.get(
-    "RUNPOD_UPLOAD_SECRET",
-    "67mN2pQ9xR4vT8wY3zA5bC6dE1fG0hJ4kL8nM2oP6qS9t",
-)
-
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
@@ -80,59 +68,6 @@ def download_file(url: str, dest: str, timeout: int = 120) -> str:
     mb = os.path.getsize(dest) / 1_000_000
     log(f"     ✓ {mb:.1f} MB")
     return dest
-
-
-def upload_video(video_path: str, job_id: str) -> dict:
-    """Upload with 3 retries. Falls back to base64 if all fail."""
-    mb       = os.path.getsize(video_path) / 1_000_000
-    filename = f"{job_id}.mp4"
-    log(f"  ⬆  Uploading {filename} ({mb:.1f} MB)")
-
-    last_error = ""
-    for attempt in range(1, 4):
-        log(f"     Attempt {attempt}/3 …")
-        try:
-            with open(video_path, "rb") as fh:
-                resp = requests.post(
-                    SIGNED_UPLOAD_ENDPOINT,
-                    headers={
-                        "Authorization": f"Bearer {RUNPOD_UPLOAD_SECRET}",
-                        "Content-Type":  "video/mp4",
-                        "X-Job-Id":      job_id,
-                        "X-Filename":    filename,
-                    },
-                    data=fh,
-                    timeout=300,
-                )
-            log(f"     HTTP {resp.status_code}")
-            if resp.ok:
-                payload   = resp.json()
-                video_url = (payload.get("url") or payload.get("publicUrl")
-                             or payload.get("signedUrl") or "")
-                log(f"     ✓ {video_url}")
-                return {"video_url": video_url, "upload_response": payload,
-                        "upload_method": "supabase"}
-            last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-        except requests.exceptions.Timeout:
-            last_error = f"Attempt {attempt} timed out"
-        except Exception as e:
-            last_error = str(e)
-        log(f"     ✗ {last_error}")
-        if attempt < 3:
-            time.sleep(2 ** attempt)
-
-    # Base64 fallback
-    log(f"  ⚠  Upload failed. Encoding as base64 fallback.")
-    with open(video_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
-    return {
-        "video_url":      "",
-        "video_base64":   b64,
-        "video_filename": filename,
-        "upload_method":  "base64_fallback",
-        "upload_error":   last_error,
-        "note":           "Decode video_base64 to recover the mp4.",
-    }
 
 
 def find_output_video(save_path: str) -> Union[str, None]:
@@ -299,17 +234,31 @@ def handler(job: dict) -> dict:
 
         log(f"  ✓ Output: {video_path}")
 
-        # ── 8. Upload ─────────────────────────────────────────────
-        upload_result = upload_video(video_path, job_id)
-
-        if upload_result.get("upload_method") == "supabase":
+        # ── 8. Direct Base64 Serialization ────────────────────────
+        mb = os.path.getsize(video_path) / 1_000_000
+        log(f"  ⚙  Encoding output video directly to Base64 ({mb:.1f} MB)…")
+        
+        try:
+            with open(video_path, "rb") as f:
+                b64_string = base64.b64encode(f.read()).decode("utf-8")
+            
+            # Clean up local video file immediately to free disk space
             try:
                 os.remove(video_path)
             except Exception:
                 pass
-
-        status = "success" if upload_result.get("video_url") else "success_base64_fallback"
-        return {"status": status, "job_id": job_id, **upload_result}
+                
+            return {
+                "status": "success",
+                "job_id": job_id,
+                "video_base64": b64_string,
+                "video_filename": f"{job_id}.mp4"
+            }
+        except Exception as err:
+            return {
+                "error": f"Failed to encode video artifact to base64 payload string: {err}",
+                "job_id": job_id
+            }
 
 
 if __name__ == "__main__":
