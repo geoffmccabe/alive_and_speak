@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# Hallo – RunPod Serverless Image (Stable Build Environment)
+# Hallo – RunPod Serverless Image (Fixed Blinker & Toolchain Build)
 # ═══════════════════════════════════════════════════════════════════
 FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
 
@@ -43,8 +43,9 @@ RUN sed -i 's/numpy==.*/numpy/g' /app/requirements.txt && \
     sed -i 's/onnxruntime-gpu==.*/onnxruntime-gpu==1.16.3/g' /app/requirements.txt && \
     sed -i 's/insightface==.*/insightface==0.7.3/g' /app/requirements.txt
 
-# ── Install remaining repository requirements safely ──────────────
-RUN pip install -r /app/requirements.txt
+# ── Install remaining requirements (Overriding legacy packages) ───
+# The --ignore-installed flag prevents the "Cannot uninstall blinker" distutils error.
+RUN pip install --ignore-installed -r /app/requirements.txt
 RUN pip install "runpod==1.6.2" requests accelerate transformers diffusers pyyaml
 
 # ── Target environment layout mapping ─────────────────────────────
