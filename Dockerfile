@@ -2,21 +2,24 @@
 #  FLOAT – RunPod Serverless Image
 #  https://github.com/deepbrainai-research/float
 #
-#  Base: CUDA 11.8 + Python 3.8.5
-#  Models expected on network volume at /runpod-volume/weights/float/
+#  Uses Python 3.8 via deadsnakes PPA — no conda needed.
+#  Models live on network volume at /runpod-volume/weights/float/
 # ═══════════════════════════════════════════════════════════════════
 FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    CONDA_DIR=/opt/conda \
-    CONDA_DEFAULT_ENV=float
+    PIP_NO_CACHE_DIR=1
 
-ENV PATH="${CONDA_DIR}/envs/float/bin:${CONDA_DIR}/bin:${PATH}"
-
-# ── System packages ──────────────────────────────────────────────
+# ── System packages + Python 3.8 via deadsnakes PPA ─────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.8 \
+        python3.8-dev \
+        python3.8-distutils \
+        python3-pip \
         wget git curl ca-certificates \
         ffmpeg \
         libgl1-mesa-glx libglib2.0-0 \
@@ -24,16 +27,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Miniconda ────────────────────────────────────────────────────
-RUN wget -q \
-        https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
-        -O /tmp/miniconda.sh \
-    && bash /tmp/miniconda.sh -b -p ${CONDA_DIR} \
-    && rm /tmp/miniconda.sh \
-    && conda clean -ya
+# ── Make python3.8 the default python ────────────────────────────
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.8 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1
 
-# ── Python 3.8.5 environment ─────────────────────────────────────
-RUN conda create -n float python=3.8.5 -y && conda clean -ya
+# ── pip for python3.8 ────────────────────────────────────────────
+RUN wget -q https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py \
+    && python /tmp/get-pip.py \
+    && rm /tmp/get-pip.py
 
 # ── PyTorch 2.0.1 + CUDA 11.8 ────────────────────────────────────
 RUN pip install \
@@ -50,7 +51,7 @@ RUN git clone --depth 1 \
 # ── FLOAT requirements ────────────────────────────────────────────
 RUN pip install -r /app/requirements.txt
 
-# ── gdown for Google Drive model download ────────────────────────
+# ── gdown for Google Drive checkpoint download ───────────────────
 RUN pip install gdown
 
 # ── RunPod SDK + requests ────────────────────────────────────────
