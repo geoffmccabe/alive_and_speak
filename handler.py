@@ -1,28 +1,18 @@
 """
-RunPod Serverless Handler – FLOAT
-https://github.com/deepbrainai-research/float
-
-FLOAT uses flow matching (not diffusion), so generation is extremely fast:
-  - Only 10 steps (nfe) by default — completes in seconds to ~1 minute
-  - Much cheaper than MultiTalk (~50x faster, ~50x less VRAM)
-
+RunPod Serverless Handler – Hallo
+Hierarchical Audio-Driven Visual Synthesis
 Input schema:
 {
   "input": {
-    "image_url":   "https://...",          # REQUIRED — frontal portrait image
-    "audio_url":   "https://.../audio.wav",# REQUIRED
-    "emotion":     null,                   # optional: angry|disgust|fear|happy|neutral|sad|surprise
-                                           # null = infer emotion from audio (S2E mode)
-    "no_crop":     false,                  # skip face cropping (use if face is already centered)
-    "a_cfg_scale": 2.0,                    # audio cfg scale (default 2.0)
-    "e_cfg_scale": 1.0,                    # emotion intensity (try 5-10 for dramatic)
-    "r_cfg_scale": 1.0,                    # reference cfg scale
-    "nfe":         10,                     # flow steps (default 10, more = slower but smoother)
-    "seed":        25
+    "image_url":   "https://...",          # REQUIRED — Source portrait image
+    "audio_url":   "https://.../audio.wav",# REQUIRED — Voice audio file
+    "pose_weight": 1.0,                    # optional: scale weight for motion/pose
+    "face_weight": 1.0,                    # optional: scale weight for facial expressions
+    "lip_weight":  1.0,                    # optional: scale weight for lips matching voice
+    "steps":       40                      # optional: diffusion steps (higher = smoother)
   }
 }
 """
-
 import os
 import sys
 import time
@@ -33,30 +23,25 @@ import subprocess
 import asyncio
 from pathlib import Path
 from typing import Union
-
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
-#  Model paths  (all under /runpod-volume/weights/float/)
+#  Model paths  (all under /runpod-volume/weights/hallo/)
 # ─────────────────────────────────────────────────────────────────
-FLOAT_WEIGHTS      = os.environ.get("FLOAT_WEIGHTS",   "/runpod-volume/weights/float")
-CKPT_PATH          = os.environ.get("CKPT_PATH",       f"{FLOAT_WEIGHTS}/float.pth")
-OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",      "/tmp/float_outputs")
-GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "300"))  # 5 min plenty for FLOAT
+HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",   "/runpod-volume/weights/hallo")
+OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",      "/tmp/hallo_outputs")
+GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "450")) # 7.5 mins matching diffusion needs
 
-# Force transformers library to map directly to local layout assets
-os.environ["TRANSFORMERS_CACHE"] = FLOAT_WEIGHTS
-os.environ["HF_HOME"] = FLOAT_WEIGHTS
-
+# Direct Cache systems locally 
+os.environ["TRANSFORMERS_CACHE"] = HALLO_WEIGHTS
+os.environ["HF_HOME"] = HALLO_WEIGHTS
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 
 # ─────────────────────────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────────────────────────
 def log(msg: str) -> None:
     print(msg, flush=True)
-
 
 def download_file(url: str, dest: str, timeout: int = 120) -> str:
     log(f"  ⬇  {url}")
@@ -69,17 +54,11 @@ def download_file(url: str, dest: str, timeout: int = 120) -> str:
     log(f"     ✓ {mb:.1f} MB")
     return dest
 
-
-def find_output_video(save_path: str) -> Union[str, None]:
-    if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-        return save_path
-    # Glob fallback
-    stem = Path(save_path).stem
-    for p in sorted(Path(OUTPUT_DIR).glob(f"{stem}*.mp4")):
+def find_output_video(save_dir: str, prefix: str) -> Union[str, None]:
+    for p in sorted(Path(save_dir).glob(f"*{prefix}*.mp4")):
         if p.stat().st_size > 0:
             return str(p)
     return None
-
 
 # ─────────────────────────────────────────────────────────────────
 #  Main handler
@@ -89,102 +68,60 @@ def handler(job: dict) -> dict:
     inp    = job["input"]
 
     log(f"\n{'═' * 60}")
-    log(f"  Job  : {job_id}")
-    log(f"  Keys : {list(inp.keys())}")
+    log(f"  Hallo Job : {job_id}")
+    log(f"  Keys      : {list(inp.keys())}")
     log(f"{'═' * 60}\n")
 
-    with tempfile.TemporaryDirectory(prefix=f"float_{job_id}_") as _tmp:
+    with tempfile.TemporaryDirectory(prefix=f"hallo_{job_id}_") as _tmp:
         tmp = Path(_tmp)
 
-        # ── 1. Download image ─────────────────────────────────────
+        # ── 1. Download reference image ───────────────────────────
         image_url = inp.get("image_url")
         if not image_url:
             return {"error": "'image_url' is required", "job_id": job_id}
 
         img_ext    = Path(image_url.split("?")[0]).suffix or ".jpg"
-        image_path = str(tmp / f"ref{img_ext}")
+        image_path = str(tmp / f"source_portrait{img_ext}")
         try:
             download_file(image_url, image_path)
         except Exception as exc:
             return {"error": f"Image download failed: {exc}", "job_id": job_id}
 
-        # ── 2. Download audio ─────────────────────────────────────
-        audio_url = inp.get("audio_url") or inp.get("audio_urls")
-        if isinstance(audio_url, list):
-            audio_url = audio_url[0]
+        # ── 2. Download audio vocal track ─────────────────────────
+        audio_url = inp.get("audio_url")
         if not audio_url:
             return {"error": "'audio_url' is required", "job_id": job_id}
 
         aud_ext    = Path(audio_url.split("?")[0]).suffix or ".wav"
-        audio_path = str(tmp / f"audio{aud_ext}")
+        audio_path = str(tmp / f"driving_vocal{aud_ext}")
         try:
             download_file(audio_url, audio_path)
         except Exception as exc:
             return {"error": f"Audio download failed: {exc}", "job_id": job_id}
 
-        # ── 3. Output path ────────────────────────────────────────
-        output_path = str(Path(OUTPUT_DIR) / f"{job_id}.mp4")
+        # ── 3. Handle Hyperparameters ─────────────────────────────
+        pose_weight = float(inp.get("pose_weight", 1.0))
+        face_weight = float(inp.get("face_weight", 1.0))
+        lip_weight  = float(inp.get("lip_weight",  1.0))
+        steps       = int(inp.get("steps",         40))
 
-        # ── 4. Parameters ─────────────────────────────────────────
-        emotion      = inp.get("emotion")       # None = infer from audio
-        no_crop      = bool(inp.get("no_crop",      False))
-        a_cfg_scale  = float(inp.get("a_cfg_scale",  2.0))
-        e_cfg_scale  = float(inp.get("e_cfg_scale",  1.0))
-        r_cfg_scale  = float(inp.get("r_cfg_scale",  1.0))
-        nfe          = int(inp.get("nfe",             10))
-        seed         = int(inp.get("seed",           25))
-
-        log(f"  emotion     : {emotion or 'S2E (from audio)'}")
-        log(f"  no_crop     : {no_crop}")
-        log(f"  nfe         : {nfe}  (flow steps)")
-        log(f"  a_cfg_scale : {a_cfg_scale}")
-        log(f"  e_cfg_scale : {e_cfg_scale}")
-
-        # Hotfix script code pathways to point straight to local folders instead of HF download queries
-        try:
-            gen_script = "/app/generate.py"
-            if os.path.exists(gen_script):
-                with open(gen_script, "r") as f:
-                    code = f.read()
-                
-                changed = False
-                if "facebook/wav2vec2-base-960h" in code:
-                    code = code.replace("facebook/wav2vec2-base-960h", f"{FLOAT_WEIGHTS}/wav2vec2-base-960h")
-                    changed = True
-                if "r-f/wav2vec-english-speech-emotion-recognition" in code:
-                    code = code.replace("r-f/wav2vec-english-speech-emotion-recognition", f"{FLOAT_WEIGHTS}/wav2vec-english-speech-emotion-recognition")
-                    changed = True
-                
-                if changed:
-                    with open(gen_script, "w") as f:
-                        f.write(code)
-                    log("   ✓ Code patch successfully applied to generate.py paths.")
-        except Exception as e:
-            log(f"   ⚠ Could not hotfix script text strings: {e}")
-
-        # ── 5. Build CLI command ──────────────────────────────────
+        # ── 4. Build CLI inference command for Hallo repo ─────────
         cmd: list[str] = [
-            sys.executable,       "/app/generate.py",
-            "--ref_path",         image_path,
-            "--aud_path",         audio_path,
-            "--res_video_path",   output_path,
-            "--ckpt_path",        CKPT_PATH,
-            "--a_cfg_scale",      str(a_cfg_scale),
-            "--e_cfg_scale",      str(e_cfg_scale),
-            "--r_cfg_scale",      str(r_cfg_scale),
-            "--nfe",              str(nfe),
-            "--seed",             str(seed),
+            sys.executable,     "scripts/inference.py",
+            "--source_image",   image_path,
+            "--driving_audio",  audio_path,
+            "--output_path",    str(Path(OUTPUT_DIR) / f"{job_id}.mp4"),
+            "--pose_weight",    str(pose_weight),
+            "--face_weight",    str(face_weight),
+            "--lip_weight",     str(lip_weight),
+            "--inference_steps", str(steps),
+            "--ckpt_path",      f"{HALLO_WEIGHTS}/hallo/net.pth"
         ]
-
-        if emotion:
-            cmd += ["--emo", emotion]
-        if no_crop:
-            cmd.append("--no_crop")
 
         log(f"\n  Command:\n  {' '.join(cmd)}\n")
 
-        # ── 6. Run generation ─────────────────────────────────────
-        log("  🚀 Launching FLOAT generation…\n")
+        # ── 5. Execute Hallo Inference ────────────────────────────
+        log("  🚀 Launching Hallo Diffusion Pipeline Generation…\n")
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -205,44 +142,43 @@ def handler(job: dict) -> dict:
                 if time.time() - start > GENERATION_TIMEOUT:
                     proc.terminate()
                     proc.wait(timeout=10)
-                    return {"error": f"Timed out after {GENERATION_TIMEOUT}s", "job_id": job_id}
+                    return {"error": f"Inference execution timed out after {GENERATION_TIMEOUT}s", "job_id": job_id}
 
             return_code = proc.wait()
 
         except Exception as exc:
-            return {"error": f"Subprocess failed: {exc}", "job_id": job_id}
+            return {"error": f"Subprocess running scripts/inference.py failed: {exc}", "job_id": job_id}
 
         log(f"\n  Return code: {return_code}")
 
         if return_code != 0:
             return {
-                "error":      "Video generation failed",
+                "error":      "Video animation synthesis failed",
                 "returncode": return_code,
-                "output":     "\n".join(lines[-60:]),
+                "output":     "\n".join(lines[-40:]),
                 "job_id":     job_id,
             }
 
-        # ── 7. Find output video ──────────────────────────────────
-        video_path = find_output_video(output_path)
-        if not video_path:
+        # ── 6. Check output file ──────────────────────────────────
+        expected_path = str(Path(OUTPUT_DIR) / f"{job_id}.mp4")
+        video_path = find_output_video(OUTPUT_DIR, job_id) or expected_path
+        
+        if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
             return {
-                "error":               "Output video not found",
-                "expected_path":       output_path,
+                "error":               "Output animated video missing or empty",
                 "output_dir_contents": [str(p) for p in Path(OUTPUT_DIR).iterdir()],
                 "job_id":              job_id,
             }
 
-        log(f"  ✓ Output: {video_path}")
-
-        # ── 8. Direct Base64 Serialization ────────────────────────
+        # ── 7. Direct Base64 Encoding ─────────────────────────────
         mb = os.path.getsize(video_path) / 1_000_000
-        log(f"  ⚙  Encoding output video directly to Base64 ({mb:.1f} MB)…")
+        log(f"  ⚙  Encoding generated video to Base64 output string ({mb:.1f} MB)…")
         
         try:
             with open(video_path, "rb") as f:
                 b64_string = base64.b64encode(f.read()).decode("utf-8")
             
-            # Clean up local video file immediately to free disk space
+            # Delete local file to optimize local ephemeral storage space
             try:
                 os.remove(video_path)
             except Exception:
@@ -256,13 +192,11 @@ def handler(job: dict) -> dict:
             }
         except Exception as err:
             return {
-                "error": f"Failed to encode video artifact to base64 payload string: {err}",
+                "error": f"Failed to encode video output buffer to Base64 sequence string: {err}",
                 "job_id": job_id
             }
 
-
 if __name__ == "__main__":
-    # Python 3.8/RunPod v1.9+ Event Loop Initialization Patch
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
