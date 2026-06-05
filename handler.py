@@ -232,7 +232,7 @@ def handler(job: dict) -> dict:
             sys.executable,       "/app/generate.py",
             "--ref_path",         image_path,
             "--aud_path",         audio_path,
-            "--output_name",      output_path,
+            "--res_video_path",   output_path,
             "--ckpt_path",        CKPT_PATH,
             "--a_cfg_scale",      str(a_cfg_scale),
             "--e_cfg_scale",      str(e_cfg_scale),
