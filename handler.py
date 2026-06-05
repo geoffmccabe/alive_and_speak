@@ -30,6 +30,7 @@ import base64
 import requests
 import tempfile
 import subprocess
+import asyncio
 from pathlib import Path
 from typing import Union
 
@@ -312,4 +313,11 @@ def handler(job: dict) -> dict:
 
 
 if __name__ == "__main__":
+    # Python 3.8/RunPod v1.9+ Event Loop Initialization Patch
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
     runpod.serverless.start({"handler": handler})
