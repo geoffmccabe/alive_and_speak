@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# Hallo – Fixed & Patched Profile (Resolves huggingface_hub breaking changes)
+# Hallo – Optimized Build Profile (NumPy 1.x & HF Hub Hotfix)
 # ═══════════════════════════════════════════════════════════════════
 FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
 
@@ -26,10 +26,12 @@ RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 1
 WORKDIR /app
 RUN git clone --depth 1 https://github.com/fudan-generative-vision/hallo.git /app
 
-# ── 4. Dependency Injection with huggingface_hub Patch ──────────────
-RUN sed -i 's/numpy==.*/numpy/g' /app/requirements.txt && \
+# ── 4. Unified Dependency Layer (Force NumPy 1.x Compatibility) ───
+# We explicitly patch the requirements file to prevent NumPy 2.x from leaking in.
+RUN sed -i 's/numpy==.*/numpy<=1.26.4/g' /app/requirements.txt && \
     sed -i 's/onnxruntime-gpu==.*/onnxruntime-gpu==1.16.3/g' /app/requirements.txt && \
     sed -i 's/insightface==.*/insightface==0.7.3/g' /app/requirements.txt && \
+    pip install "numpy<=1.26.4" && \
     pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu118 && \
     pip install onnxruntime-gpu==1.16.3 insightface==0.7.3 && \
     pip install --ignore-installed -r /app/requirements.txt && \
