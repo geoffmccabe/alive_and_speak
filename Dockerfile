@@ -1,77 +1,68 @@
-FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+# ═══════════════════════════════════════════════════════════════════
+#  FLOAT – RunPod Serverless Image
+#  https://github.com/deepbrainai-research/float
+#
+#  Base: CUDA 11.8 + Python 3.8.5
+#  Models expected on network volume at /runpod-volume/weights/float/
+# ═══════════════════════════════════════════════════════════════════
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    MAX_JOBS=4 \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0"
+    CONDA_DIR=/opt/conda \
+    CONDA_DEFAULT_ENV=float
 
-# System packages
+ENV PATH="${CONDA_DIR}/envs/float/bin:${CONDA_DIR}/bin:${PATH}"
+
+# ── System packages ──────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 \
-        python3-dev \
-        python3-pip \
-        python3-venv \
-        wget \
-        git \
-        curl \
-        ca-certificates \
+        wget git curl ca-certificates \
         ffmpeg \
+        libgl1-mesa-glx libglib2.0-0 \
         libsndfile1 \
-        libsndfile1-dev \
-        libgl1-mesa-glx \
-        libglib2.0-0 \
         build-essential \
-        ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Create virtual env
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:${PATH}"
+# ── Miniconda ────────────────────────────────────────────────────
+RUN wget -q \
+        https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
+        -O /tmp/miniconda.sh \
+    && bash /tmp/miniconda.sh -b -p ${CONDA_DIR} \
+    && rm /tmp/miniconda.sh \
+    && conda clean -ya
 
-# Upgrade pip tools
-RUN pip install --upgrade pip setuptools wheel
+# ── Python 3.8.5 environment ─────────────────────────────────────
+RUN conda create -n float python=3.8.5 -y && conda clean -ya
 
-# Clone alive_and_speak repo
+# ── PyTorch 2.0.1 + CUDA 11.8 ────────────────────────────────────
+RUN pip install \
+        torch==2.0.1 \
+        torchvision==0.15.2 \
+        torchaudio==2.0.2 \
+        --index-url https://download.pytorch.org/whl/cu118
+
+# ── Clone FLOAT repo ─────────────────────────────────────────────
 WORKDIR /app
-RUN git clone --depth 1 https://github.com/saif816/alive_and_speak /app
+RUN git clone --depth 1 \
+        https://github.com/deepbrainai-research/float /app
 
-# Upgrade to PyTorch 2.5.1 (Fixes the infer_schema type-hint validation bug)
-RUN pip install \
-        torch==2.5.1 \
-        torchvision==0.20.1 \
-        torchaudio==2.5.1 \
-        --index-url https://download.pytorch.org/whl/cu121
-
-# Matching xformers version for PyTorch 2.5.1
-RUN pip install xformers==0.0.28.post3 \
-        --extra-index-url https://download.pytorch.org/whl/cu121
-
-# Core deps
-RUN pip install \
-        ninja \
-        psutil \
-        packaging \
-        "misaki[en]" \
-        runpod \
-        requests \
-        librosa
-
-# Repo Python dependencies (Installed before flash-attn to prevent overwriting versions)
+# ── FLOAT requirements ────────────────────────────────────────────
 RUN pip install -r /app/requirements.txt
 
-# flash-attn compiled against the upgraded PyTorch stack
-RUN pip install flash_attn==2.7.4.post1 --no-build-isolation
+# ── gdown for Google Drive model download ────────────────────────
+RUN pip install gdown
 
-# Runtime directories
-RUN mkdir -p /tmp/multitalk_outputs \
+# ── RunPod SDK + requests ────────────────────────────────────────
+RUN pip install runpod requests
+
+# ── Runtime directories ──────────────────────────────────────────
+RUN mkdir -p /tmp/float_outputs \
              /comfyui/ComfyUI
 
-# App files
-COPY handler.py /app/handler.py
-COPY start.sh /start.sh
+# ── Application files ────────────────────────────────────────────
+COPY handler.py             /app/handler.py
+COPY start.sh               /start.sh
 COPY extra_model_paths.yaml /comfyui/extra_model_paths.yaml
 COPY extra_model_paths.yaml /comfyui/ComfyUI/extra_model_paths.yaml
 
