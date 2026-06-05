@@ -48,10 +48,11 @@ RUN git clone --depth 1 \
 RUN pip install -r /app/requirements.txt
 
 # ── gdown (Google Drive downloader) + RunPod SDK ─────────────────
-RUN pip install gdown runpod requests
+RUN pip install gdown "runpod==1.6.2" requests
 
 # ── Runtime directories ──────────────────────────────────────────
 RUN mkdir -p /tmp/float_outputs /comfyui/ComfyUI
+
 # ── Application files ────────────────────────────────────────────
 COPY handler.py             /app/handler.py
 COPY start.sh               /start.sh
