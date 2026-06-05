@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════
-# Hallo – RunPod Serverless Image (Optimized & Fixed Build)
+# Hallo – RunPod Serverless Image (Robust Build Configuration)
 # ═══════════════════════════════════════════════════════════════════
 FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+
 ENV DEBIAN_FRONTEND=noninteractive 
 ENV PYTHONUNBUFFERED=1 
 ENV PIP_NO_CACHE_DIR=1
@@ -33,22 +34,26 @@ RUN pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url h
 WORKDIR /app
 RUN git clone --depth 1 https://github.com/fudan-generative-vision/hallo.git /app
 
-# ── Pre-install problematic dependencies from wheels ──────────────
-# This prevents compilation errors from insightface/onnxruntime during requirements mapping
+# ── Install problematic binary wheels directly ────────────────────
 RUN pip install onnxruntime-gpu==1.16.3
 RUN pip install insightface==0.7.3
 
+# ── Hotfix requirements.txt conflict items ───────────────────────
+RUN sed -i 's/numpy==.*/numpy/g' /app/requirements.txt && \
+    sed -i 's/onnxruntime-gpu==.*/onnxruntime-gpu==1.16.3/g' /app/requirements.txt && \
+    sed -i 's/insightface==.*/insightface==0.7.3/g' /app/requirements.txt
+
 # ── Hallo requirements ────────────────────────────────────────────
 RUN pip install -r /app/requirements.txt
-RUN pip install "runpod==1.6.2" requests accelerate transformers diffusers
+RUN pip install "runpod==1.6.2" requests accelerate transformers diffusers pyyaml
 
 # ── Runtime directories ──────────────────────────────────────────
-RUN mkdir -p /tmp/hallo_outputs /runpod-volume/weights/hallo
+RUN mkdir -p /tmp/hallo_outputs /runpod-volume/weights/hallo /app/configs
 
 # ── Application files ────────────────────────────────────────────
-COPY extra_model_paths.yaml /app/configs/extra_model_paths.yaml
 COPY handler.py             /app/handler.py
 COPY start.sh               /start.sh
+COPY extra_model_paths.yaml /app/configs/extra_model_paths.yaml
 RUN chmod +x /start.sh
 
 CMD ["/start.sh"]
