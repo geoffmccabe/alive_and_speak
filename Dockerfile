@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-#  FLOAT – RunPod Serverless Image
+#  FLOAT – RunPod Serverless Imae
 #  https://github.com/deepbrainai-research/float
 # ═══════════════════════════════════════════════════════════════════
 FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
