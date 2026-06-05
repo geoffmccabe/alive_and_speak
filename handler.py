@@ -31,16 +31,21 @@ import requests
 import tempfile
 import subprocess
 from pathlib import Path
+from typing import Union
 
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
 #  Model paths  (all under /runpod-volume/weights/float/)
 # ─────────────────────────────────────────────────────────────────
-FLOAT_WEIGHTS   = os.environ.get("FLOAT_WEIGHTS",   "/runpod-volume/weights/float")
-CKPT_PATH       = os.environ.get("CKPT_PATH",       f"{FLOAT_WEIGHTS}/float.pth")
-OUTPUT_DIR      = os.environ.get("OUTPUT_DIR",       "/tmp/float_outputs")
+FLOAT_WEIGHTS      = os.environ.get("FLOAT_WEIGHTS",   "/runpod-volume/weights/float")
+CKPT_PATH          = os.environ.get("CKPT_PATH",       f"{FLOAT_WEIGHTS}/float.pth")
+OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",      "/tmp/float_outputs")
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "300"))  # 5 min plenty for FLOAT
+
+# Force transformers library to map directly to local layout assets
+os.environ["TRANSFORMERS_CACHE"] = FLOAT_WEIGHTS
+os.environ["HF_HOME"] = FLOAT_WEIGHTS
 
 # ─────────────────────────────────────────────────────────────────
 #  Upload config
@@ -129,7 +134,7 @@ def upload_video(video_path: str, job_id: str) -> dict:
     }
 
 
-def find_output_video(save_path: str) -> str | None:
+def find_output_video(save_path: str) -> Union[str, None]:
     if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
         return save_path
     # Glob fallback
@@ -190,7 +195,7 @@ def handler(job: dict) -> dict:
         a_cfg_scale  = float(inp.get("a_cfg_scale",  2.0))
         e_cfg_scale  = float(inp.get("e_cfg_scale",  1.0))
         r_cfg_scale  = float(inp.get("r_cfg_scale",  1.0))
-        nfe          = int(inp.get("nfe",            10))
+        nfe          = int(inp.get("nfe",             10))
         seed         = int(inp.get("seed",           25))
 
         log(f"  emotion     : {emotion or 'S2E (from audio)'}")
@@ -199,12 +204,34 @@ def handler(job: dict) -> dict:
         log(f"  a_cfg_scale : {a_cfg_scale}")
         log(f"  e_cfg_scale : {e_cfg_scale}")
 
+        # Hotfix script code pathways to point straight to local folders instead of HF download queries
+        try:
+            gen_script = "/app/generate.py"
+            if os.path.exists(gen_script):
+                with open(gen_script, "r") as f:
+                    code = f.read()
+                
+                changed = False
+                if "facebook/wav2vec2-base-960h" in code:
+                    code = code.replace("facebook/wav2vec2-base-960h", f"{FLOAT_WEIGHTS}/wav2vec2-base-960h")
+                    changed = True
+                if "r-f/wav2vec-english-speech-emotion-recognition" in code:
+                    code = code.replace("r-f/wav2vec-english-speech-emotion-recognition", f"{FLOAT_WEIGHTS}/wav2vec-english-speech-emotion-recognition")
+                    changed = True
+                
+                if changed:
+                    with open(gen_script, "w") as f:
+                        f.write(code)
+                    log("   ✓ Code patch successfully applied to generate.py paths.")
+        except Exception as e:
+            log(f"   ⚠ Could not hotfix script text strings: {e}")
+
         # ── 5. Build CLI command ──────────────────────────────────
         cmd: list[str] = [
             sys.executable,       "/app/generate.py",
             "--ref_path",         image_path,
             "--aud_path",         audio_path,
-            "--res_video_path",   output_path,
+            "--output_name",      output_path,
             "--ckpt_path",        CKPT_PATH,
             "--a_cfg_scale",      str(a_cfg_scale),
             "--e_cfg_scale",      str(e_cfg_scale),
