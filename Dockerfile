@@ -46,6 +46,7 @@ RUN pip install "runpod==1.6.2" requests accelerate transformers diffusers
 RUN mkdir -p /tmp/hallo_outputs /runpod-volume/weights/hallo
 
 # ── Application files ────────────────────────────────────────────
+COPY extra_model_paths.yaml /app/configs/extra_model_paths.yaml
 COPY handler.py             /app/handler.py
 COPY start.sh               /start.sh
 RUN chmod +x /start.sh
