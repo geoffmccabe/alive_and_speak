@@ -14,7 +14,7 @@ from typing import Union
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
-#  Paths & Critical Environment Symlink Setup
+#  Path
 # ─────────────────────────────────────────────────────────────────
 HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",      "/runpod-volume/weights/hallo")
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/hallo_outputs")
