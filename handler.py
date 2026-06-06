@@ -19,7 +19,7 @@ HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",      "/runpod-volume/weight
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/hallo_outputs")
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))  # 10 min
 
-# Point HF cache at the network volume so nothing downloads at runtime
+# Point HF cache and general caches at the network volume so nothing downloads at runtime
 os.environ["HF_HOME"]            = HALLO_WEIGHTS
 os.environ["TRANSFORMERS_CACHE"] = HALLO_WEIGHTS
 
@@ -67,9 +67,9 @@ def build_hallo_config(
     tmp_dir: Path,
 ) -> str:
     """
-    Loads Hallo's native default configuration file, modifies only the
-    necessary fields to point to our input assets and storage targets,
-    and returns a valid, structured temporary config file path.
+    Loads Hallo's native default configuration file, modifies the necessary 
+    fields to point to our input assets and storage targets, and fixes the 
+    InsightFace model layout constraints.
     """
     base_config_path = "/app/configs/inference/default.yaml"
     
@@ -79,27 +79,35 @@ def build_hallo_config(
     with open(base_config_path, 'r') as f:
         config_data = yaml.safe_load(f)
 
-    # 1. Map input variables onto the default structure
+    # 1. Map runtime inputs onto the template
     config_data["source_image"] = image_path
     config_data["driving_audio"] = audio_path
     config_data["save_path"] = output_path
 
-    # 2. Map weight directories directly to the persistent storage volumes
+    # 2. Map weight directories to the persistent network volume assets
     config_data["base_model_path"] = f"{HALLO_WEIGHTS}/stable-diffusion-v1-5"
     config_data["motion_module_path"] = f"{HALLO_WEIGHTS}/motion_module/mm_sd_v15_v2.ckpt"
     config_data["vae_model_path"] = f"{HALLO_WEIGHTS}/sd-vae-ft-mse"
     config_data["ckpt_path"] = f"{HALLO_WEIGHTS}/hallo/net.pth"
-    config_data["face_analysis_model_path"] = f"{HALLO_WEIGHTS}/face_analysis"
     config_data["audio_ckpt_dir"] = f"{HALLO_WEIGHTS}/wav2vec/wav2vec2-base-960h"
 
-    # 3. Update execution hyperparameters
+    # 3. CRITICAL PATCH: Fix InsightFace Configuration Structure
+    # This prevents the empty string download URL generation and locks paths locally.
+    config_data["face_analysis_model_path"] = f"{HALLO_WEIGHTS}/face_analysis"
+    
+    # Ensure the root dictionary or sub-configurations contain the default model tag
+    if "face_analysis" not in config_data or not config_data["face_analysis"]:
+        config_data["face_analysis"] = {}
+    config_data["face_analysis"]["model_name"] = "buffalo_l"
+
+    # 4. Update execution hyperparameters
     config_data["inference_steps"] = steps
     config_data["pose_weight"] = pose_weight
     config_data["face_weight"] = face_weight
     config_data["lip_weight"] = lip_weight
     config_data["face_expand_ratio"] = face_expand_ratio
 
-    # Save the complete runtime config to a temporary file
+    # Save the complete runtime config back out as a temporary YAML file
     cfg_path = str(tmp_dir / "job_config.yaml")
     with open(cfg_path, "w") as f:
         yaml.safe_dump(config_data, f)
@@ -184,6 +192,14 @@ def handler(job: dict) -> dict:
         # ── 7. Run inference ──────────────────────────────────────
         log("  🚀 Launching Hallo diffusion pipeline…\n")
         try:
+            # We explicitly enforce the INSIGHTFACE_HOME environment variable to force 
+            # the backend to search inside our persistent weights directory structure.
+            custom_env = {
+                **os.environ, 
+                "PYTHONUNBUFFERED": "1",
+                "INSIGHTFACE_HOME": f"{HALLO_WEIGHTS}/face_analysis"
+            }
+            
             proc = subprocess.Popen(
                 cmd,
                 cwd="/app",
@@ -191,7 +207,7 @@ def handler(job: dict) -> dict:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env=custom_env,
             )
 
             start = time.time()
