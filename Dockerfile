@@ -2,9 +2,16 @@
 #  Hallo – RunPod Serverless Image
 #  https://github.com/fudan-generative-vision/hallo
 #
-#  ROOT CAUSE FIX: scipy 1.15+ requires NumPy 2.x internals.
-#  We pin scipy<=1.13.0 and xformers==0.0.23 (built for torch 2.1.2+cu118)
-#  so that the scipy → xformers → diffusers import chain never breaks.
+#  Fixes applied vs previous builds:
+#    1. pip install -e /app   → installs the 'hallo' package so
+#       "from hallo.animate..." resolves correctly
+#    2. torch==2.2.2+cu121   → matches what the RunPod CUDA 11.8
+#       runtime actually ships (logs showed 2.2.2+cu121)
+#    3. xformers==0.0.25.post1 → built for torch 2.2.x + cu121
+#    4. scipy==1.11.4 pinned  → last version fully compatible with
+#       numpy 1.x (scipy 1.12+ requires numpy 2.x internals)
+#    5. Install order: numpy → torch → scipy → xformers → hallo pkg
+#       → rest of requirements → runtime deps
 # ═══════════════════════════════════════════════════════════════════
 FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
 
@@ -31,62 +38,62 @@ RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 1
 WORKDIR /app
 RUN git clone --depth 1 https://github.com/fudan-generative-vision/hallo.git /app
 
-# ── 4. Patch requirements.txt BEFORE installing anything ─────────
-#
-#  Key pins that fix the crash:
-#    numpy<=1.26.4      – stay on 1.x ABI
-#    scipy==1.11.4      – last scipy that works cleanly with numpy 1.x
-#                         (scipy 1.12+ introduced the _multiufuncs issue)
-#    xformers==0.0.23   – built against torch 2.1.x + cu118, numpy 1.x
-#    diffusers==0.27.2  – version Hallo's scripts were written for
-#    transformers==4.38.2
-#    huggingface_hub<0.26.0 – avoids cached_download removal
-#
+# ── 4. Patch requirements.txt before any installs ─────────────────
 RUN sed -i \
         -e 's/numpy[>=<!=].*/numpy<=1.26.4/g' \
         -e 's/scipy[>=<!=].*/scipy==1.11.4/g' \
-        -e 's/xformers[>=<!=].*/xformers==0.0.23/g' \
+        -e 's/xformers[>=<!=].*/xformers==0.0.25.post1/g' \
         -e 's/onnxruntime-gpu[>=<!=].*/onnxruntime-gpu==1.16.3/g' \
         -e 's/insightface[>=<!=].*/insightface==0.7.3/g' \
         -e 's/diffusers[>=<!=].*/diffusers==0.27.2/g' \
         -e 's/transformers[>=<!=].*/transformers==4.38.2/g' \
         /app/requirements.txt
 
-# ── 5. Install in correct order ───────────────────────────────────
-#  Order matters: numpy first, then scipy (so its C extensions
-#  compile/link against numpy 1.x), then torch, then everything else.
+# ── 5. Install in strict dependency order ─────────────────────────
+# numpy first so every subsequent C extension builds against 1.x ABI
 RUN pip install "numpy<=1.26.4"
 
+# torch 2.2.2+cu121 — matches what the RunPod host runtime exposes
+# (logs showed: PyTorch 2.2.2+cu121 already present at runtime)
 RUN pip install \
-        torch==2.1.2 \
-        torchvision==0.16.2 \
-        torchaudio==2.1.2 \
-        --index-url https://download.pytorch.org/whl/cu118
+        torch==2.2.2 \
+        torchvision==0.17.2 \
+        torchaudio==2.2.2 \
+        --index-url https://download.pytorch.org/whl/cu121
 
-# scipy must be pinned BEFORE xformers is installed
+# scipy pinned BEFORE xformers so its C exts link against numpy 1.x
 RUN pip install "scipy==1.11.4"
 
+# xformers built for torch 2.2.x + cu121
+RUN pip install "xformers==0.0.25.post1"
+
+# Other binary deps
 RUN pip install \
-        "xformers==0.0.23" \
         "onnxruntime-gpu==1.16.3" \
         "insightface==0.7.3"
 
-# Install the rest of Hallo's requirements (numpy/scipy/xformers already satisfied)
+# ── 6. Install hallo as a Python package ──────────────────────────
+# THIS is the critical fix for "ModuleNotFoundError: No module named 'hallo'"
+# The repo ships a setup.py / pyproject.toml; editable install makes
+# `from hallo.animate.face_animate import ...` resolve correctly.
+RUN pip install -e /app --no-deps
+
+# ── 7. Install remaining requirements (skip already-pinned pkgs) ──
 RUN pip install --no-deps -r /app/requirements.txt
 
-# Runtime + handler deps
+# ── 8. Runtime + handler deps ─────────────────────────────────────
 RUN pip install \
         "diffusers==0.27.2" \
         "transformers==4.38.2" \
         "huggingface_hub<0.26.0" \
         "runpod==1.6.2" \
-        requests accelerate pyyaml omegaconf einops imageio imageio-ffmpeg \
-        face_alignment
+        requests accelerate pyyaml omegaconf einops \
+        imageio imageio-ffmpeg face_alignment
 
-# ── 6. Directory layout ───────────────────────────────────────────
+# ── 9. Directory layout ───────────────────────────────────────────
 RUN mkdir -p /tmp/hallo_outputs /runpod-volume/weights/hallo /app/configs
 
-# ── 7. Application files ──────────────────────────────────────────
+# ── 10. Application files ─────────────────────────────────────────
 COPY handler.py             /app/handler.py
 COPY start.sh               /start.sh
 COPY extra_model_paths.yaml /app/configs/extra_model_paths.yaml
