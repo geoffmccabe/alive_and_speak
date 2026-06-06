@@ -1,34 +1,3 @@
-"""
-RunPod Serverless Handler – Hallo
-https://github.com/fudan-generative-vision/hallo
-
-Hallo uses a hierarchical audio-driven diffusion pipeline:
-  - ~40 inference steps by default
-  - Requires ~16 GB VRAM
-
-Model layout expected at /runpod-volume/weights/hallo/:
-  hallo/net.pth                          ← main Hallo checkpoint
-  motion_module/mm_sd_v15_v2.ckpt        ← AnimateDiff motion module
-  sd-vae-ft-mse/                         ← Stable Diffusion VAE
-  stable-diffusion-v1-5/                 ← SD 1.5 base (unet + text encoder)
-  face_analysis/models/                  ← InsightFace models
-  audio_separator/                       ← vocal separation weights
-  wav2vec/wav2vec2-base-960h/            ← audio feature extractor
-
-Input schema:
-{
-  "input": {
-    "image_url":   "https://...",          # REQUIRED — frontal portrait (square or 3:2)
-    "audio_url":   "https://.../audio.wav",# REQUIRED — clear vocal .wav
-    "pose_weight": 1.0,                    # head-pose motion scale
-    "face_weight": 1.0,                    # facial-expression scale
-    "lip_weight":  1.0,                    # lip-sync tightness (raise for stricter sync)
-    "face_expand_ratio": 1.2,             # face crop expansion ratio
-    "steps":       40                      # diffusion steps (40 default, more = smoother)
-  }
-}
-"""
-
 import os
 import sys
 import time
@@ -37,6 +6,7 @@ import requests
 import tempfile
 import subprocess
 import asyncio
+import yaml
 from pathlib import Path
 from typing import Union
 
@@ -76,11 +46,9 @@ def download_file(url: str, dest: str, timeout: int = 120) -> str:
 
 
 def find_output_video(save_dir: str, job_id: str) -> Union[str, None]:
-    # First try exact expected path
     exact = Path(save_dir) / f"{job_id}.mp4"
     if exact.exists() and exact.stat().st_size > 0:
         return str(exact)
-    # Glob fallback — Hallo sometimes appends a suffix
     for p in sorted(Path(save_dir).glob("*.mp4")):
         if p.stat().st_size > 0 and job_id[:8] in p.name:
             return str(p)
@@ -99,39 +67,43 @@ def build_hallo_config(
     tmp_dir: Path,
 ) -> str:
     """
-    Hallo's inference.py reads a YAML config, not just CLI flags.
-    We build a minimal config that overrides the defaults shipped
-    in /app/configs/inference/default.yaml.
+    Loads Hallo's native default configuration file, modifies only the
+    necessary fields to point to our input assets and storage targets,
+    and returns a valid, structured temporary config file path.
     """
-    config_content = f"""
-# Auto-generated per-job config for Hallo
-output_dir: "{OUTPUT_DIR}"
-source_image: "{image_path}"
-driving_audio: "{audio_path}"
-save_path: "{output_path}"
+    base_config_path = "/app/configs/inference/default.yaml"
+    
+    if not os.path.exists(base_config_path):
+        raise FileNotFoundError(f"Base config not found at {base_config_path}")
+        
+    with open(base_config_path, 'r') as f:
+        config_data = yaml.safe_load(f)
 
-# Weights – point every sub-model at the network volume
-base_model_path: "{HALLO_WEIGHTS}/stable-diffusion-v1-5"
-motion_module_path: "{HALLO_WEIGHTS}/motion_module/mm_sd_v15_v2.ckpt"
-vae_model_path: "{HALLO_WEIGHTS}/sd-vae-ft-mse"
-ckpt_path: "{HALLO_WEIGHTS}/hallo/net.pth"
+    # 1. Map input variables onto the default structure
+    config_data["source_image"] = image_path
+    config_data["driving_audio"] = audio_path
+    config_data["save_path"] = output_path
 
-# Face analysis
-face_analysis_model_path: "{HALLO_WEIGHTS}/face_analysis"
+    # 2. Map weight directories directly to the persistent storage volumes
+    config_data["base_model_path"] = f"{HALLO_WEIGHTS}/stable-diffusion-v1-5"
+    config_data["motion_module_path"] = f"{HALLO_WEIGHTS}/motion_module/mm_sd_v15_v2.ckpt"
+    config_data["vae_model_path"] = f"{HALLO_WEIGHTS}/sd-vae-ft-mse"
+    config_data["ckpt_path"] = f"{HALLO_WEIGHTS}/hallo/net.pth"
+    config_data["face_analysis_model_path"] = f"{HALLO_WEIGHTS}/face_analysis"
+    config_data["audio_ckpt_dir"] = f"{HALLO_WEIGHTS}/wav2vec/wav2vec2-base-960h"
 
-# Audio
-audio_ckpt_dir: "{HALLO_WEIGHTS}/wav2vec/wav2vec2-base-960h"
+    # 3. Update execution hyperparameters
+    config_data["inference_steps"] = steps
+    config_data["pose_weight"] = pose_weight
+    config_data["face_weight"] = face_weight
+    config_data["lip_weight"] = lip_weight
+    config_data["face_expand_ratio"] = face_expand_ratio
 
-# Inference hyper-params
-inference_steps: {steps}
-pose_weight: {pose_weight}
-face_weight: {face_weight}
-lip_weight: {lip_weight}
-face_expand_ratio: {face_expand_ratio}
-"""
+    # Save the complete runtime config to a temporary file
     cfg_path = str(tmp_dir / "job_config.yaml")
     with open(cfg_path, "w") as f:
-        f.write(config_content)
+        yaml.safe_dump(config_data, f)
+        
     return cfg_path
 
 
@@ -190,20 +162,17 @@ def handler(job: dict) -> dict:
         # ── 4. Output path ────────────────────────────────────────
         output_path = str(Path(OUTPUT_DIR) / f"{job_id}.mp4")
 
-        # ── 5. Build per-job YAML config ──────────────────────────
-        cfg_path = build_hallo_config(
-            image_path, audio_path, output_path,
-            pose_weight, face_weight, lip_weight,
-            face_expand_ratio, steps, tmp,
-        )
+        # ── 5. Build modified YAML config ─────────────────────────
+        try:
+            cfg_path = build_hallo_config(
+                image_path, audio_path, output_path,
+                pose_weight, face_weight, lip_weight,
+                face_expand_ratio, steps, tmp,
+            )
+        except Exception as config_err:
+            return {"error": f"Config compilation failed: {config_err}", "job_id": job_id}
 
         # ── 6. Build the inference command ────────────────────────
-        #
-        #  Hallo's scripts/inference.py signature (from the repo):
-        #    python scripts/inference.py --config <yaml>
-        #
-        #  The --config flag merges on top of configs/inference/default.yaml
-        #
         cmd: list[str] = [
             sys.executable, "scripts/inference.py",
             "--config", cfg_path,
