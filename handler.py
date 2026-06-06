@@ -7,13 +7,14 @@ import tempfile
 import subprocess
 import asyncio
 import yaml
+import shutil
 from pathlib import Path
 from typing import Union
 
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
-#  Paths
+#  Paths & Critical Environment Symlink Setup
 # ─────────────────────────────────────────────────────────────────
 HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",      "/runpod-volume/weights/hallo")
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/hallo_outputs")
@@ -23,16 +24,46 @@ GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))  # 10 min
 os.environ["HF_HOME"]            = HALLO_WEIGHTS
 os.environ["TRANSFORMERS_CACHE"] = HALLO_WEIGHTS
 
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+log("⏳ Initializing system paths and correcting InsightFace routes...")
+
+# CRITICAL SYSTEM LINK ENFORCEMENT:
+# Intercepts both root and app paths so InsightFace finds the local models instantly.
+for base_prefix in ["/app", ""]:
+    target_dir = f"{base_prefix}/pretrained_models/face_analysis/models"
+    try:
+        os.makedirs(os.path.dirname(target_dir), exist_ok=True)
+        # Clear any existing broken files or dead links
+        if os.path.exists(target_dir) or os.path.islink(target_dir):
+            if os.path.islink(target_dir):
+                os.unlink(target_dir)
+            else:
+                shutil.rmtree(target_dir)
+        
+        # Link directly to your volume's buffalo_l directory
+        os.symlink(f"{HALLO_WEIGHTS}/face_analysis/models/buffalo_l", target_dir)
+        log(f"   ✓ Anchored system shortcut: {target_dir} -> Volume")
+    except Exception as link_err:
+        log(f"   ⚠️ Path routing note for {target_dir}: {link_err}")
+
+# Create a literal fallback '.zip' symlink inside the root route to intercept empty string requests
+try:
+    fallback_zip_route = "/pretrained_models/face_analysis/models/.zip"
+    os.makedirs(os.path.dirname(fallback_zip_route), exist_ok=True)
+    if not os.path.exists(fallback_zip_route) and not os.path.islink(fallback_zip_route):
+        os.symlink(f"{HALLO_WEIGHTS}/face_analysis/models/buffalo_l", fallback_zip_route)
+        log(f"   ✓ Anchored fallback empty-string shortcut: {fallback_zip_route}")
+except Exception as fallback_err:
+    log(f"   ⚠️ Fallback shortcut skip: {fallback_err}")
+
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────────────────────────
-def log(msg: str) -> None:
-    print(msg, flush=True)
-
-
 def download_file(url: str, dest: str, timeout: int = 120) -> str:
     log(f"  ⬇  {url}")
     r = requests.get(url, stream=True, timeout=timeout)
@@ -91,11 +122,9 @@ def build_hallo_config(
     config_data["ckpt_path"] = f"{HALLO_WEIGHTS}/hallo/net.pth"
     config_data["audio_ckpt_dir"] = f"{HALLO_WEIGHTS}/wav2vec/wav2vec2-base-960h"
 
-    # 3. CRITICAL PATCH: Override path configuration parameters
-    # Point directly to the parent folder directory where 'models/buffalo_l' resides.
+    # 3. Path Configuration Overrides
     config_data["face_analysis_model_path"] = f"{HALLO_WEIGHTS}/face_analysis"
     
-    # Force 'buffalo_l' configuration strings to override native blank default rules
     if "face_analysis" not in config_data or not config_data["face_analysis"]:
         config_data["face_analysis"] = {}
     
@@ -195,7 +224,6 @@ def handler(job: dict) -> dict:
         # ── 7. Run inference ──────────────────────────────────────
         log("  🚀 Launching Hallo diffusion pipeline…\n")
         try:
-            # Enforce cache environments and target home path flags explicitly 
             custom_env = {
                 **os.environ, 
                 "PYTHONUNBUFFERED": "1",
