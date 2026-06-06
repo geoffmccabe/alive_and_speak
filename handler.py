@@ -27,44 +27,36 @@ os.environ["TRANSFORMERS_CACHE"] = HALLO_WEIGHTS
 def log(msg: str) -> None:
     print(msg, flush=True)
 
-log("⏳ Initializing system paths and correcting InsightFace routes...")
+log("⏳ Initializing system paths and correcting folder hierarchy routes...")
 
-# CRITICAL SYSTEM LINK ENFORCEMENT:
-# Intercepts both root and app paths so InsightFace finds the local models instantly.
+# CRITICAL COEXISTENCE ROUTING:
+# Links the parent 'models' directory so BOTH buffalo_l AND the landmarker task coexist perfectly.
 for base_prefix in ["/app", ""]:
-    target_dir = f"{base_prefix}/pretrained_models/face_analysis/models"
+    target_models_dir = f"{base_prefix}/pretrained_models/face_analysis/models"
     try:
-        os.makedirs(os.path.dirname(target_dir), exist_ok=True)
-        # Clear any existing broken files or dead links
-        if os.path.exists(target_dir) or os.path.islink(target_dir):
-            if os.path.islink(target_dir):
-                os.unlink(target_dir)
-            else:
-                shutil.rmtree(target_dir)
+        os.makedirs(os.path.dirname(target_models_dir), exist_ok=True)
         
-        # Link directly to your volume's buffalo_l directory
-        os.symlink(f"{HALLO_WEIGHTS}/face_analysis/models/buffalo_l", target_dir)
-        log(f"   ✓ Anchored system shortcut: {target_dir} -> Volume")
+        # Clear any existing links or files to reset cleanly
+        if os.path.exists(target_models_dir) or os.path.islink(target_models_dir):
+            if os.path.islink(target_models_dir):
+                os.unlink(target_models_dir)
+            else:
+                shutil.rmtree(target_models_dir)
+        
+        # Link directly to the root models directory on the volume
+        os.symlink(f"{HALLO_WEIGHTS}/face_analysis/models", target_models_dir)
+        log(f"   ✓ Anchored parent route: {target_models_dir} -> Volume models/")
     except Exception as link_err:
-        log(f"   ⚠️ Path routing note for {target_dir}: {link_err}")
+        log(f"   ⚠️ Parent folder routing note for {target_models_dir}: {link_err}")
 
-# Create a literal fallback '.zip' symlink inside the root route to intercept empty string requests
+# Create a literal placeholder link for the empty string .zip glitch directly inside the real volume
 try:
-    fallback_zip_route = "/pretrained_models/face_analysis/models/.zip"
-    os.makedirs(os.path.dirname(fallback_zip_route), exist_ok=True)
-    if not os.path.exists(fallback_zip_route) and not os.path.islink(fallback_zip_route):
-        os.symlink(f"{HALLO_WEIGHTS}/face_analysis/models/buffalo_l", fallback_zip_route)
-        log(f"   ✓ Anchored fallback empty-string shortcut: {fallback_zip_route}")
+    volume_zip_fallback = f"{HALLO_WEIGHTS}/face_analysis/models/.zip"
+    if not os.path.exists(volume_zip_fallback) and not os.path.islink(volume_zip_fallback):
+        os.symlink(f"{HALLO_WEIGHTS}/face_analysis/models/buffalo_l", volume_zip_fallback)
+        log(f"   ✓ Anchored fallback .zip shortcut on persistent volume")
 except Exception as fallback_err:
-    log(f"   ⚠️ Fallback shortcut skip: {fallback_err}")
-
-# ONNX RUNTIME CUDA 12 COMPATIBILITY FIX:
-# If the environment has an onnxruntime version built against CUDA 11, patch it or force correct linkage
-try:
-    import onnxruntime as ort
-    log(f"   ✓ Found onnxruntime version: {ort.__version__}")
-except ImportError:
-    log("   ⚠️ onnxruntime not found in root environment.")
+    log(f"   ⚠️ Fallback skip: {fallback_err}")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
