@@ -8,15 +8,18 @@ FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=100 \
+    PIP_RETRIES=10
 
-# ── 1. System packages ────────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# ── 1. System packages (Quiet & Cleaned) ──────────────────────────
+RUN apt-get update && apt-get install -y -qq --no-install-recommends \
         software-properties-common \
         wget git curl ca-certificates ffmpeg \
         libgl1-mesa-glx libglib2.0-0 libsndfile1 \
         build-essential libasound2-dev portaudio19-dev \
         python3.10 python3.10-dev python3.10-distutils \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # ── 2. Python base ────────────────────────────────────────────────
@@ -64,13 +67,7 @@ RUN python3.10 -m pip install -e /app --no-deps
 # ── 7. Install remaining requirements ─────────────────────────────
 RUN python3.10 -m pip install -r /app/requirements.txt
 
-# ── 8. Explicit moviepy stack + proglog ───────────────────────────
-RUN python3.10 -m pip install \
-        "moviepy==1.0.3" \
-        "proglog>=0.1.9" \
-        "decorator>=4.0.2"
-
-# ── 9. Runtime + handler deps ─────────────────────────────────────
+# ── 8. Runtime + handler deps ─────────────────────────────────────
 RUN python3.10 -m pip install \
         "diffusers==0.27.2" \
         "transformers==4.38.2" \
@@ -78,6 +75,12 @@ RUN python3.10 -m pip install \
         "runpod==1.6.2" \
         requests accelerate pyyaml omegaconf einops \
         imageio imageio-ffmpeg face_alignment
+
+# ── 9. Force Explicit moviepy stack last to prevent overrides ───
+RUN python3.10 -m pip install --force-reinstall \
+        "moviepy==1.0.3" \
+        "proglog>=0.1.9" \
+        "decorator>=4.0.2"
 
 # ── 10. Directory layout ──────────────────────────────────────────
 RUN mkdir -p /tmp/hallo_outputs /runpod-volume/weights/hallo /app/configs
