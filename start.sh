@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════
-#  start.sh – Hallo RunPod Serverless entrypoint
+#  start.sh – Hallo RunP
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
