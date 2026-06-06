@@ -91,14 +91,17 @@ def build_hallo_config(
     config_data["ckpt_path"] = f"{HALLO_WEIGHTS}/hallo/net.pth"
     config_data["audio_ckpt_dir"] = f"{HALLO_WEIGHTS}/wav2vec/wav2vec2-base-960h"
 
-    # 3. CRITICAL PATCH: Fix InsightFace Configuration Structure
-    # This prevents the empty string download URL generation and locks paths locally.
+    # 3. CRITICAL PATCH: Override path configuration parameters
+    # Point directly to the parent folder directory where 'models/buffalo_l' resides.
     config_data["face_analysis_model_path"] = f"{HALLO_WEIGHTS}/face_analysis"
     
-    # Ensure the root dictionary or sub-configurations contain the default model tag
+    # Force 'buffalo_l' configuration strings to override native blank default rules
     if "face_analysis" not in config_data or not config_data["face_analysis"]:
         config_data["face_analysis"] = {}
-    config_data["face_analysis"]["model_name"] = "buffalo_l"
+    
+    if isinstance(config_data["face_analysis"], dict):
+        config_data["face_analysis"]["model_name"] = "buffalo_l"
+        config_data["face_analysis"]["name"] = "buffalo_l"
 
     # 4. Update execution hyperparameters
     config_data["inference_steps"] = steps
@@ -192,11 +195,12 @@ def handler(job: dict) -> dict:
         # ── 7. Run inference ──────────────────────────────────────
         log("  🚀 Launching Hallo diffusion pipeline…\n")
         try:
-            # We explicitly enforce the INSIGHTFACE_HOME environment variable to force 
-            # the backend to search inside our persistent weights directory structure.
+            # Enforce cache environments and target home path flags explicitly 
             custom_env = {
                 **os.environ, 
                 "PYTHONUNBUFFERED": "1",
+                "HF_HOME": HALLO_WEIGHTS,
+                "TRANSFORMERS_CACHE": HALLO_WEIGHTS,
                 "INSIGHTFACE_HOME": f"{HALLO_WEIGHTS}/face_analysis"
             }
             
