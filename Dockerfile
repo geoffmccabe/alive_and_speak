@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-#  Hallo – RunPod Serverless Image
+#  Hallo – Fully Repaired RunPod Serverless Production Image
 #  https://github.com/fudan-generative-vision/hallo
 # ═══════════════════════════════════════════════════════════════════
 
@@ -12,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DEFAULT_TIMEOUT=100 \
     PIP_RETRIES=10
 
-# ── 1. System packages (Quiet & Cleaned) ──────────────────────────
+# ── 1. System packages (Quiet & Optimized) ────────────────────────
 RUN apt-get update && apt-get install -y -qq --no-install-recommends \
         software-properties-common \
         wget git curl ca-certificates ffmpeg \
@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y -qq --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# ── 2. Python base ────────────────────────────────────────────────
+# ── 2. Python base setup ──────────────────────────────────────────
 RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
     && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10 \
@@ -64,10 +64,14 @@ RUN python3.10 -m pip install \
 # ── 6. Install hallo as a Python package ──────────────────────────
 RUN python3.10 -m pip install -e /app --no-deps
 
-# ── 7. Install remaining requirements ─────────────────────────────
+# ── 7. CRITICAL HOTFIX: Purge Legacy Distutils Blinker 1.4 ────────
+# This unblocks the "uninstall-distutils-installed-package" failure.
+RUN rm -rf /usr/lib/python3/dist-packages/blinker*
+
+# ── 8. Install remaining requirements ─────────────────────────────
 RUN python3.10 -m pip install -r /app/requirements.txt
 
-# ── 8. Runtime + handler deps ─────────────────────────────────────
+# ── 9. Runtime + handler deps ─────────────────────────────────────
 RUN python3.10 -m pip install \
         "diffusers==0.27.2" \
         "transformers==4.38.2" \
@@ -76,16 +80,16 @@ RUN python3.10 -m pip install \
         requests accelerate pyyaml omegaconf einops \
         imageio imageio-ffmpeg face_alignment
 
-# ── 9. Force Explicit moviepy stack last to prevent overrides ───
+# ── 10. Force Explicit moviepy stack last to prevent overrides ───
 RUN python3.10 -m pip install --force-reinstall \
         "moviepy==1.0.3" \
         "proglog>=0.1.9" \
         "decorator>=4.0.2"
 
-# ── 10. Directory layout ──────────────────────────────────────────
+# ── 11. Directory layout ──────────────────────────────────────────
 RUN mkdir -p /tmp/hallo_outputs /runpod-volume/weights/hallo /app/configs
 
-# ── 11. Application files ─────────────────────────────────────────
+# ── 12. Application files ─────────────────────────────────────────
 COPY handler.py             /app/handler.py
 COPY start.sh               /start.sh
 COPY extra_model_paths.yaml /app/configs/extra_model_paths.yaml
