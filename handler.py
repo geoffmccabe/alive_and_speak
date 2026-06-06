@@ -14,7 +14,7 @@ from typing import Union
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
-#  Path
+#  Paths & Critical Environment Symlink Setup
 # ─────────────────────────────────────────────────────────────────
 HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",      "/runpod-volume/weights/hallo")
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/hallo_outputs")
@@ -57,6 +57,14 @@ try:
         log(f"   ✓ Anchored fallback empty-string shortcut: {fallback_zip_route}")
 except Exception as fallback_err:
     log(f"   ⚠️ Fallback shortcut skip: {fallback_err}")
+
+# ONNX RUNTIME CUDA 12 COMPATIBILITY FIX:
+# If the environment has an onnxruntime version built against CUDA 11, patch it or force correct linkage
+try:
+    import onnxruntime as ort
+    log(f"   ✓ Found onnxruntime version: {ort.__version__}")
+except ImportError:
+    log("   ⚠️ onnxruntime not found in root environment.")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -224,12 +232,18 @@ def handler(job: dict) -> dict:
         # ── 7. Run inference ──────────────────────────────────────
         log("  🚀 Launching Hallo diffusion pipeline…\n")
         try:
+            # Reconstruct LD_LIBRARY_PATH so CUDA 12 libs are discoverable by ONNX Runtime
+            current_ld = os.environ.get("LD_LIBRARY_PATH", "")
+            cuda_12_paths = "/usr/local/cuda/lib64:/usr/local/cuda-12.1/lib64"
+            new_ld = f"{cuda_12_paths}:{current_ld}" if current_ld else cuda_12_paths
+
             custom_env = {
                 **os.environ, 
                 "PYTHONUNBUFFERED": "1",
                 "HF_HOME": HALLO_WEIGHTS,
                 "TRANSFORMERS_CACHE": HALLO_WEIGHTS,
-                "INSIGHTFACE_HOME": f"{HALLO_WEIGHTS}/face_analysis"
+                "INSIGHTFACE_HOME": f"{HALLO_WEIGHTS}/face_analysis",
+                "LD_LIBRARY_PATH": new_ld
             }
             
             proc = subprocess.Popen(
