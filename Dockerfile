@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-#  Hallo – Fully Repaired RunPod Serverless Production Image
+#  Hallo – Final Optimized RunPod Serverless Production Image
 #  https://github.com/fudan-generative-vision/hallo
 # ═══════════════════════════════════════════════════════════════════
 
@@ -65,7 +65,6 @@ RUN python3.10 -m pip install \
 RUN python3.10 -m pip install -e /app --no-deps
 
 # ── 7. CRITICAL HOTFIX: Purge Legacy Distutils Blinker 1.4 ────────
-# This unblocks the "uninstall-distutils-installed-package" failure.
 RUN rm -rf /usr/lib/python3/dist-packages/blinker*
 
 # ── 8. Install remaining requirements ─────────────────────────────
@@ -86,10 +85,14 @@ RUN python3.10 -m pip install --force-reinstall \
         "proglog>=0.1.9" \
         "decorator>=4.0.2"
 
-# ── 11. Directory layout ──────────────────────────────────────────
+# ── 11. STRATEGIC IMMUNITY LAYER (Locks NumPy 1.x Architecture) ──
+# This overrides any late updates pulled in by downstream dependencies.
+RUN python3.10 -m pip install --force-reinstall "numpy<=1.26.4"
+
+# ── 12. Directory layout ──────────────────────────────────────────
 RUN mkdir -p /tmp/hallo_outputs /runpod-volume/weights/hallo /app/configs
 
-# ── 12. Application files ─────────────────────────────────────────
+# ── 13. Application files ─────────────────────────────────────────
 COPY handler.py             /app/handler.py
 COPY start.sh               /start.sh
 COPY extra_model_paths.yaml /app/configs/extra_model_paths.yaml
