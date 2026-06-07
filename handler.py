@@ -26,7 +26,7 @@ import runpod
 
 HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS", "/runpod-volume/weights/hallo")
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",    "/tmp/hallo_outputs")
-GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))
+GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600000"))
 
 os.environ["HF_HOME"]            = HALLO_WEIGHTS
 os.environ["TRANSFORMERS_CACHE"] = HALLO_WEIGHTS
