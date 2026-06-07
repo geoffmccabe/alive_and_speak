@@ -45,7 +45,7 @@ def initialize_and_enforce_assets():
     buffalo_dir.mkdir(parents=True, exist_ok=True)
 
     # Checklist for missing download requirements
-    # FIXED: Verified URLs targeting real repository structures on Hugging Face
+    # Includes w600k_r50.onnx from the public insightface repo to fix KeyError: 'embedding'
     download_targets = [
         (
             "https://huggingface.co/fudan-generative-ai/hallo2/resolve/main/face_analysis/models/face_landmarker_v2_with_blendshapes.task",
@@ -58,6 +58,10 @@ def initialize_and_enforce_assets():
         (
             "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/det_10g.onnx",
             buffalo_dir / "det_10g.onnx"
+        ),
+        (
+            "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx",
+            buffalo_dir / "w600k_r50.onnx"
         )
     ]
 
