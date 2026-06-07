@@ -302,7 +302,7 @@ def handler(job: dict) -> dict:
                 cmd, cwd="/app",
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env={**os.environ, "PYTHONUNBUFFERED": "1", "IMAGEIO_FFMPEG_EXE": "/usr/bin/ffmpeg"},
             )
             start = time.time()
             lines = []
@@ -320,33 +320,64 @@ def handler(job: dict) -> dict:
 
         log(f"\n  Return code: {return_code}")
 
-        if return_code != 0:
+        # Try to locate the output video file
+        video_path = find_output_video(OUTPUT_DIR, job_id)
+
+        # ── MoviePy Broken Pipe Recovery Workaround ─────────────────
+        # If the script failed or the video wasn't found, check if cached frames exist to stitch manually
+        if not video_path or return_code != 0:
+            log("  ⚠️  MoviePy step hit a pipe truncation. Checking fallback cache for frame assembly...")
+            
+            # Formulate possible location where hallo dumped frame files
+            cache_folder = Path(OUTPUT_DIR) / f"{job_id}.mp4"
+            
+            if cache_folder.exists() and any(cache_folder.glob("frame_*.png")):
+                log(f"  ⚙  Found generated image frames inside cache: {cache_folder}")
+                manual_output = Path(OUTPUT_DIR) / f"{job_id}_fixed.mp4"
+                
+                # Manual compilation query using system's local optimized ffmpeg binary
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-framerate", "25",
+                    "-i", f"{cache_folder}/frame_%04d.png",
+                    "-i", audio_path,
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest", str(manual_output)
+                ]
+                
+                log(f"  🚀 Launching Manual FFmpeg: {' '.join(ffmpeg_cmd)}")
+                assemble_res = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+                
+                if manual_output.exists() and manual_output.stat().st_size > 0:
+                    video_path = str(manual_output)
+                    log("  ✓ Manual conversion compilation successful!")
+                else:
+                    log(f"  ✗ Manual assembly failed. FFmpeg stderr:\n{assemble_res.stderr}")
+
+        if not video_path:
             return {
-                "error":      "Inference failed",
+                "error":  "Output video file not found, frame recovery unsuccessful.",
                 "returncode": return_code,
-                "output":     "\n".join(lines[-60:]),
+                "output":     "\n".join(lines[-40:]),
                 "job_id":     job_id,
             }
 
-        video_path = find_output_video(OUTPUT_DIR, job_id)
-        if not video_path:
-            return {
-                "error":  "Output video not found",
-                "job_id": job_id,
-                "dir":    [str(p) for p in Path(OUTPUT_DIR).iterdir()],
-            }
-
-        log(f"  ✓ {video_path}")
+        log(f"  ✓ Found target file: {video_path}")
         mb = os.path.getsize(video_path) / 1e6
-        log(f"  ⚙  Encoding {mb:.1f} MB…")
+        log(f"  ⚙  Encoding {mb:.1f} MB to base64 string…")
 
         try:
             with open(video_path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
             try:
                 os.remove(video_path)
+                # Cleanup cache folder layout if it exists
+                cache_folder = Path(OUTPUT_DIR) / f"{job_id}.mp4"
+                if cache_folder.is_dir():
+                    import shutil
+                    shutil.rmtree(cache_folder)
             except Exception:
                 pass
+                
             return {
                 "status":         "success",
                 "job_id":         job_id,
