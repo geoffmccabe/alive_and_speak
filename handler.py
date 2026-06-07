@@ -1,3 +1,14 @@
+"""
+RunPod Serverless Handler – Hallo
+https://github.com/fudan-generative-vision/hallo
+
+InsightFace path note:
+  inference.py runs with cwd=/app and resolves model paths as:
+    ./pretrained_models/face_analysis/models/*.onnx
+  So the volume models dir must be linked to /app/pretrained_models/face_analysis/models
+  start.sh handles this; handler also ensures it at runtime.
+"""
+
 import os
 import sys
 import time
@@ -7,58 +18,60 @@ import tempfile
 import subprocess
 import asyncio
 import yaml
-import shutil
 from pathlib import Path
 from typing import Union
 
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
-#  Paths & Critical Environment Symlink Setup
+#  Paths
 # ─────────────────────────────────────────────────────────────────
-HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",      "/runpod-volume/weights/hallo")
-OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/hallo_outputs")
-GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))  # 10 min
+HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS", "/runpod-volume/weights/hallo")
+OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",    "/tmp/hallo_outputs")
+GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))
 
-# Point HF cache and general caches at the network volume so nothing downloads at runtime
 os.environ["HF_HOME"]            = HALLO_WEIGHTS
 os.environ["TRANSFORMERS_CACHE"] = HALLO_WEIGHTS
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 
 def log(msg: str) -> None:
     print(msg, flush=True)
 
-log("⏳ Initializing system paths and correcting folder hierarchy routes...")
 
-# CRITICAL COEXISTENCE ROUTING:
-# Links the parent 'models' directory so BOTH buffalo_l AND the landmarker task coexist perfectly.
-for base_prefix in ["/app", ""]:
-    target_models_dir = f"{base_prefix}/pretrained_models/face_analysis/models"
-    try:
-        os.makedirs(os.path.dirname(target_models_dir), exist_ok=True)
-        
-        # Clear any existing links or files to reset cleanly
-        if os.path.exists(target_models_dir) or os.path.islink(target_models_dir):
-            if os.path.islink(target_models_dir):
-                os.unlink(target_models_dir)
-            else:
-                shutil.rmtree(target_models_dir)
-        
-        # Link directly to the root models directory on the volume
-        os.symlink(f"{HALLO_WEIGHTS}/face_analysis/models", target_models_dir)
-        log(f"   ✓ Anchored parent route: {target_models_dir} -> Volume models/")
-    except Exception as link_err:
-        log(f"   ⚠️ Parent folder routing note for {target_models_dir}: {link_err}")
+# ─────────────────────────────────────────────────────────────────
+#  InsightFace CWD fix
+#  InsightFace resolves onnx paths relative to cwd (/app), as:
+#    ./pretrained_models/face_analysis/models/*.onnx
+#  We symlink that path to the real volume location.
+# ─────────────────────────────────────────────────────────────────
+def fix_insightface_cwd_path() -> None:
+    target = Path("/app/pretrained_models/face_analysis/models")
+    source = Path(HALLO_WEIGHTS) / "face_analysis" / "models"
 
-# Create a literal placeholder link for the empty string .zip glitch directly inside the real volume
-try:
-    volume_zip_fallback = f"{HALLO_WEIGHTS}/face_analysis/models/.zip"
-    if not os.path.exists(volume_zip_fallback) and not os.path.islink(volume_zip_fallback):
-        os.symlink(f"{HALLO_WEIGHTS}/face_analysis/models/buffalo_l", volume_zip_fallback)
-        log(f"   ✓ Anchored fallback .zip shortcut on persistent volume")
-except Exception as fallback_err:
-    log(f"   ⚠️ Fallback skip: {fallback_err}")
+    if not source.exists():
+        log(f"  ⚠  face_analysis/models not found at {source}")
+        return
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if target.is_symlink():
+        if Path(os.readlink(target)) == source:
+            log(f"  ✓ InsightFace path already linked correctly")
+            return
+        else:
+            target.unlink()  # stale link — recreate
+
+    if target.exists():
+        # real directory in the way — rename it
+        target.rename(str(target) + ".bak")
+
+    target.symlink_to(source)
+    log(f"  ✓ Linked /app/pretrained_models/face_analysis/models → {source}")
+
+
+fix_insightface_cwd_path()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -71,8 +84,7 @@ def download_file(url: str, dest: str, timeout: int = 120) -> str:
     with open(dest, "wb") as fh:
         for chunk in r.iter_content(chunk_size=65_536):
             fh.write(chunk)
-    mb = os.path.getsize(dest) / 1_000_000
-    log(f"     ✓ {mb:.1f} MB")
+    log(f"     ✓ {os.path.getsize(dest)/1e6:.1f} MB")
     return dest
 
 
@@ -86,170 +98,115 @@ def find_output_video(save_dir: str, job_id: str) -> Union[str, None]:
     return None
 
 
-def build_hallo_config(
-    image_path: str,
-    audio_path: str,
-    output_path: str,
-    pose_weight: float,
-    face_weight: float,
-    lip_weight: float,
-    face_expand_ratio: float,
-    steps: int,
-    tmp_dir: Path,
-) -> str:
-    """
-    Loads Hallo's native default configuration file, modifies the necessary 
-    fields to point to our input assets and storage targets, and fixes the 
-    InsightFace model layout constraints.
-    """
-    base_config_path = "/app/configs/inference/default.yaml"
-    
-    if not os.path.exists(base_config_path):
-        raise FileNotFoundError(f"Base config not found at {base_config_path}")
-        
-    with open(base_config_path, 'r') as f:
-        config_data = yaml.safe_load(f)
+def write_job_config(image_path, audio_path, output_path,
+                     pose_weight, face_weight, lip_weight,
+                     face_expand_ratio, steps, tmp_dir) -> str:
+    base_cfg = "/app/configs/inference/default.yaml"
+    if not os.path.exists(base_cfg):
+        raise FileNotFoundError(f"Missing: {base_cfg}")
 
-    # 1. Map runtime inputs onto the template
-    config_data["source_image"] = image_path
-    config_data["driving_audio"] = audio_path
-    config_data["save_path"] = output_path
+    with open(base_cfg) as f:
+        cfg = yaml.safe_load(f)
 
-    # 2. Map weight directories to the persistent network volume assets
-    config_data["base_model_path"] = f"{HALLO_WEIGHTS}/stable-diffusion-v1-5"
-    config_data["motion_module_path"] = f"{HALLO_WEIGHTS}/motion_module/mm_sd_v15_v2.ckpt"
-    config_data["vae_model_path"] = f"{HALLO_WEIGHTS}/sd-vae-ft-mse"
-    config_data["ckpt_path"] = f"{HALLO_WEIGHTS}/hallo/net.pth"
-    config_data["audio_ckpt_dir"] = f"{HALLO_WEIGHTS}/wav2vec/wav2vec2-base-960h"
+    cfg["source_image"]             = image_path
+    cfg["driving_audio"]            = audio_path
+    cfg["save_path"]                = output_path
+    cfg["output_dir"]               = OUTPUT_DIR
+    cfg["base_model_path"]          = f"{HALLO_WEIGHTS}/stable-diffusion-v1-5"
+    cfg["motion_module_path"]       = f"{HALLO_WEIGHTS}/motion_module/mm_sd_v15_v2.ckpt"
+    cfg["vae_model_path"]           = f"{HALLO_WEIGHTS}/sd-vae-ft-mse"
+    cfg["ckpt_path"]                = f"{HALLO_WEIGHTS}/hallo/net.pth"
+    cfg["audio_ckpt_dir"]           = f"{HALLO_WEIGHTS}/wav2vec/wav2vec2-base-960h"
+    # This must match what inference.py passes to ImageProcessor,
+    # which then passes it as `root` to FaceAnalysis(name="", root=...)
+    # InsightFace then looks at: root/models/ for onnx files.
+    # With our cwd symlink in place, "./pretrained_models/face_analysis"
+    # resolves to the volume. We set the absolute path here too.
+    cfg["face_analysis_model_path"] = f"{HALLO_WEIGHTS}/face_analysis"
+    cfg["inference_steps"]          = steps
+    cfg["pose_weight"]              = pose_weight
+    cfg["face_weight"]              = face_weight
+    cfg["lip_weight"]               = lip_weight
+    cfg["face_expand_ratio"]        = face_expand_ratio
 
-    # 3. Path Configuration Overrides
-    config_data["face_analysis_model_path"] = f"{HALLO_WEIGHTS}/face_analysis"
-    
-    if "face_analysis" not in config_data or not config_data["face_analysis"]:
-        config_data["face_analysis"] = {}
-    
-    if isinstance(config_data["face_analysis"], dict):
-        config_data["face_analysis"]["model_name"] = "buffalo_l"
-        config_data["face_analysis"]["name"] = "buffalo_l"
-
-    # 4. Update execution hyperparameters
-    config_data["inference_steps"] = steps
-    config_data["pose_weight"] = pose_weight
-    config_data["face_weight"] = face_weight
-    config_data["lip_weight"] = lip_weight
-    config_data["face_expand_ratio"] = face_expand_ratio
-
-    # Save the complete runtime config back out as a temporary YAML file
     cfg_path = str(tmp_dir / "job_config.yaml")
     with open(cfg_path, "w") as f:
-        yaml.safe_dump(config_data, f)
-        
+        yaml.safe_dump(cfg, f)
     return cfg_path
 
 
 # ─────────────────────────────────────────────────────────────────
-#  Main handler
+#  Handler
 # ─────────────────────────────────────────────────────────────────
 def handler(job: dict) -> dict:
     job_id = job["id"]
     inp    = job["input"]
 
-    log(f"\n{'═' * 60}")
+    log(f"\n{'═'*60}")
     log(f"  Hallo Job : {job_id}")
     log(f"  Keys      : {list(inp.keys())}")
-    log(f"{'═' * 60}\n")
+    log(f"{'═'*60}\n")
 
     with tempfile.TemporaryDirectory(prefix=f"hallo_{job_id}_") as _tmp:
         tmp = Path(_tmp)
 
-        # ── 1. Download portrait image ────────────────────────────
+        # Download image
         image_url = inp.get("image_url")
         if not image_url:
             return {"error": "'image_url' is required", "job_id": job_id}
-
         img_ext    = Path(image_url.split("?")[0]).suffix or ".jpg"
         image_path = str(tmp / f"source_portrait{img_ext}")
         try:
             download_file(image_url, image_path)
-        except Exception as exc:
-            return {"error": f"Image download failed: {exc}", "job_id": job_id}
+        except Exception as e:
+            return {"error": f"Image download failed: {e}", "job_id": job_id}
 
-        # ── 2. Download driving audio ─────────────────────────────
+        # Download audio
         audio_url = inp.get("audio_url")
         if not audio_url:
             return {"error": "'audio_url' is required", "job_id": job_id}
-
         aud_ext    = Path(audio_url.split("?")[0]).suffix or ".wav"
         audio_path = str(tmp / f"driving_audio{aud_ext}")
         try:
             download_file(audio_url, audio_path)
-        except Exception as exc:
-            return {"error": f"Audio download failed: {exc}", "job_id": job_id}
+        except Exception as e:
+            return {"error": f"Audio download failed: {e}", "job_id": job_id}
 
-        # ── 3. Parameters ─────────────────────────────────────────
-        pose_weight        = float(inp.get("pose_weight",        1.0))
-        face_weight        = float(inp.get("face_weight",        1.0))
-        lip_weight         = float(inp.get("lip_weight",         1.0))
-        face_expand_ratio  = float(inp.get("face_expand_ratio",  1.2))
-        steps              = int(inp.get("steps",                 40))
+        # Parameters
+        pose_weight       = float(inp.get("pose_weight",       1.0))
+        face_weight       = float(inp.get("face_weight",       1.0))
+        lip_weight        = float(inp.get("lip_weight",        1.0))
+        face_expand_ratio = float(inp.get("face_expand_ratio", 1.2))
+        steps             = int(inp.get("steps",               40))
 
-        log(f"  pose_weight       : {pose_weight}")
-        log(f"  face_weight       : {face_weight}")
-        log(f"  lip_weight        : {lip_weight}")
-        log(f"  face_expand_ratio : {face_expand_ratio}")
-        log(f"  steps             : {steps}")
+        log(f"  pose={pose_weight}  face={face_weight}  lip={lip_weight}  "
+            f"expand={face_expand_ratio}  steps={steps}")
 
-        # ── 4. Output path ────────────────────────────────────────
         output_path = str(Path(OUTPUT_DIR) / f"{job_id}.mp4")
 
-        # ── 5. Build modified YAML config ─────────────────────────
+        # Build config
         try:
-            cfg_path = build_hallo_config(
+            cfg_path = write_job_config(
                 image_path, audio_path, output_path,
                 pose_weight, face_weight, lip_weight,
-                face_expand_ratio, steps, tmp,
-            )
-        except Exception as config_err:
-            return {"error": f"Config compilation failed: {config_err}", "job_id": job_id}
+                face_expand_ratio, steps, tmp)
+        except Exception as e:
+            return {"error": f"Config failed: {e}", "job_id": job_id}
 
-        # ── 6. Build the inference command ────────────────────────
-        cmd: list[str] = [
-            sys.executable, "scripts/inference.py",
-            "--config", cfg_path,
-        ]
+        # Run inference
+        cmd = [sys.executable, "scripts/inference.py", "--config", cfg_path]
+        log(f"  Command: {' '.join(cmd)}\n")
+        log("  🚀 Launching Hallo…\n")
 
-        log(f"\n  Command:\n  {' '.join(cmd)}\n")
-        log(f"  Config path: {cfg_path}\n")
-
-        # ── 7. Run inference ──────────────────────────────────────
-        log("  🚀 Launching Hallo diffusion pipeline…\n")
         try:
-            # Reconstruct LD_LIBRARY_PATH so CUDA 12 libs are discoverable by ONNX Runtime
-            current_ld = os.environ.get("LD_LIBRARY_PATH", "")
-            cuda_12_paths = "/usr/local/cuda/lib64:/usr/local/cuda-12.1/lib64"
-            new_ld = f"{cuda_12_paths}:{current_ld}" if current_ld else cuda_12_paths
-
-            custom_env = {
-                **os.environ, 
-                "PYTHONUNBUFFERED": "1",
-                "HF_HOME": HALLO_WEIGHTS,
-                "TRANSFORMERS_CACHE": HALLO_WEIGHTS,
-                "INSIGHTFACE_HOME": f"{HALLO_WEIGHTS}/face_analysis",
-                "LD_LIBRARY_PATH": new_ld
-            }
-            
             proc = subprocess.Popen(
-                cmd,
-                cwd="/app",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=custom_env,
+                cmd, cwd="/app",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
-
             start = time.time()
-            lines: list[str] = []
+            lines = []
             for line in proc.stdout:
                 line = line.rstrip("\r\n")
                 log(line)
@@ -257,62 +214,49 @@ def handler(job: dict) -> dict:
                 if time.time() - start > GENERATION_TIMEOUT:
                     proc.terminate()
                     proc.wait(timeout=10)
-                    return {
-                        "error":   f"Timed out after {GENERATION_TIMEOUT}s",
-                        "job_id":  job_id,
-                    }
-
+                    return {"error": f"Timed out after {GENERATION_TIMEOUT}s", "job_id": job_id}
             return_code = proc.wait()
-
-        except Exception as exc:
-            return {"error": f"Subprocess failed: {exc}", "job_id": job_id}
+        except Exception as e:
+            return {"error": f"Subprocess failed: {e}", "job_id": job_id}
 
         log(f"\n  Return code: {return_code}")
 
         if return_code != 0:
             return {
-                "error":      "Video synthesis failed — see output for details",
+                "error":      "Inference failed",
                 "returncode": return_code,
                 "output":     "\n".join(lines[-60:]),
                 "job_id":     job_id,
             }
 
-        # ── 8. Locate output video ────────────────────────────────
+        # Find and encode output
         video_path = find_output_video(OUTPUT_DIR, job_id)
         if not video_path:
             return {
-                "error":               "Output video not found after successful run",
-                "expected_path":       output_path,
-                "output_dir_contents": [str(p) for p in Path(OUTPUT_DIR).iterdir()],
-                "job_id":              job_id,
+                "error":  "Output video not found",
+                "job_id": job_id,
+                "dir":    [str(p) for p in Path(OUTPUT_DIR).iterdir()],
             }
 
-        log(f"  ✓ Output: {video_path}")
-
-        # ── 9. Encode to Base64 and return ────────────────────────
-        mb = os.path.getsize(video_path) / 1_000_000
-        log(f"  ⚙  Encoding {mb:.1f} MB video to Base64…")
+        log(f"  ✓ {video_path}")
+        mb = os.path.getsize(video_path) / 1e6
+        log(f"  ⚙  Encoding {mb:.1f} MB…")
 
         try:
             with open(video_path, "rb") as f:
-                b64_string = base64.b64encode(f.read()).decode("utf-8")
-
+                b64 = base64.b64encode(f.read()).decode()
             try:
                 os.remove(video_path)
             except Exception:
                 pass
-
             return {
                 "status":         "success",
                 "job_id":         job_id,
-                "video_base64":   b64_string,
+                "video_base64":   b64,
                 "video_filename": f"{job_id}.mp4",
             }
-        except Exception as err:
-            return {
-                "error":   f"Base64 encoding failed: {err}",
-                "job_id":  job_id,
-            }
+        except Exception as e:
+            return {"error": f"Encoding failed: {e}", "job_id": job_id}
 
 
 if __name__ == "__main__":
@@ -321,5 +265,4 @@ if __name__ == "__main__":
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-
     runpod.serverless.start({"handler": handler})
