@@ -21,7 +21,7 @@ import runpod
 # ─────────────────────────────────────────────────────────────────
 #  Paths & Critical Environment Setup
 # ─────────────────────────────────────────────────────────────────
-HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",      "/workspace/weights/hallo")
+HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",      "/runpod-volume/weights/hallo")
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/hallo_outputs")
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))
 
