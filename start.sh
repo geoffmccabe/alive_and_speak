@@ -1,7 +1,4 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════════
-#  start.sh – Hallo RunP
-# ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 echo "╔══════════════════════════════════════════════════════════╗"
@@ -9,40 +6,41 @@ echo "║  Hallo – RunPod Serverless Worker                        ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 
 HALLO_WEIGHTS="${HALLO_WEIGHTS:-/runpod-volume/weights/hallo}"
-echo ""
 echo "  HALLO_WEIGHTS : ${HALLO_WEIGHTS}"
 echo ""
 
-# ── Verify critical model files are present ───────────────────────
+# ── InsightFace CWD fix ───────────────────────────────────────────
+# inference.py runs with cwd=/app and InsightFace resolves paths as:
+#   ./pretrained_models/face_analysis/models/*.onnx
+# So we need /app/pretrained_models/face_analysis/models/ → volume models/
+mkdir -p /app/pretrained_models/face_analysis
+if [[ ! -L "/app/pretrained_models/face_analysis/models" ]]; then
+    ln -sf "${HALLO_WEIGHTS}/face_analysis/models" \
+           /app/pretrained_models/face_analysis/models
+    echo "  ✓ Linked: /app/pretrained_models/face_analysis/models → volume"
+else
+    echo "  ✓ Already linked: /app/pretrained_models/face_analysis/models"
+fi
+
+# ── Model file check ──────────────────────────────────────────────
+echo ""
 echo "  Checking model files:"
-MISSING=0
 for f in \
     "hallo/net.pth" \
     "motion_module/mm_sd_v15_v2.ckpt" \
     "sd-vae-ft-mse/config.json" \
     "stable-diffusion-v1-5/unet/config.json" \
-    "face_analysis/models/buffalo_l/det_10g.onnx" \
+    "face_analysis/models/det_10g.onnx" \
     "wav2vec/wav2vec2-base-960h/config.json"
 do
     full="${HALLO_WEIGHTS}/${f}"
-    if [[ -f "${full}" ]]; then
-        sz=$(du -sh "${full}" 2>/dev/null | cut -f1)
-        echo "    ✓  ${f}  (${sz})"
+    if [[ -f "${full}" || -L "${full}" ]]; then
+        echo "    ✓  ${f}"
     else
-        echo "    ✗  MISSING: ${full}"
-        MISSING=1
+        echo "    ✗  MISSING: ${f}"
     fi
 done
 
-if [[ "${MISSING}" == "1" ]]; then
-    echo ""
-    echo "  ⚠  One or more model files are missing."
-    echo "     Run the download command shown below, then restart."
-    echo ""
-fi
-
 echo ""
-echo "  Starting RunPod serverless handler…"
-echo ""
-
+echo "  Starting handler…"
 exec python3 -u /app/handler.py
