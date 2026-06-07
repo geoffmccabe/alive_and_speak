@@ -25,8 +25,12 @@ HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",      "/workspace/weights/ha
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/hallo_outputs")
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))
 
-os.environ["HF_HOME"]            = HALLO_WEIGHTS
-os.environ["TRANSFORMERS_CACHE"] = HALLO_WEIGHTS
+# Absolute offline environment enforcement
+os.environ["HF_HOME"]               = HALLO_WEIGHTS
+os.environ["TRANSFORMERS_CACHE"]    = HALLO_WEIGHTS
+os.environ["HF_HUB_OFFLINE"]        = "1"
+os.environ["HF_DATASETS_OFFLINE"]   = "1"
+os.environ["TRANSFORMERS_OFFLINE"]  = "1"
 
 def log(msg: str) -> None:
     print(msg, flush=True)
@@ -46,7 +50,7 @@ def initialize_and_enforce_assets():
     buffalo_dir.mkdir(parents=True, exist_ok=True)
     wav2vec_dir.mkdir(parents=True, exist_ok=True)
 
-    # Convert safetensors to pytorch_model.bin locally if needed
+    # Convert safetensors to pytorch_model.bin locally if needed to bypass wav2vec online call
     safetensors_weight = wav2vec_dir / "model.safetensors"
     pytorch_weight = wav2vec_dir / "pytorch_model.bin"
     
@@ -79,7 +83,6 @@ def initialize_and_enforce_assets():
             "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx",
             buffalo_dir / "w600k_r50.onnx"
         ),
-        # Fallback downloads if files are missing or conversion didn't happen
         (
             "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/main/config.json",
             wav2vec_dir / "config.json"
@@ -90,17 +93,12 @@ def initialize_and_enforce_assets():
         )
     ]
 
-    # Handle final file validation loops
-    if not pytorch_weight.exists() or pytorch_weight.stat().st_size == 0:
-        download_targets.append((
-            "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/main/pytorch_model.bin",
-            pytorch_weight
-        ))
-
     for url, dest_path in download_targets:
         if not dest_path.exists() or dest_path.stat().st_size == 0:
             log(f"   ✗ Missing required asset: {dest_path.parent.name}/{dest_path.name}. Repairing target layout...")
             try:
+                # temporarily turn off offline mode to fetch framework metadata elements if completely missing
+                os.environ["HF_HUB_OFFLINE"] = "0"
                 with requests.get(url, stream=True, timeout=300) as r:
                     r.raise_for_status()
                     with open(dest_path, "wb") as f:
@@ -110,6 +108,8 @@ def initialize_and_enforce_assets():
                 log(f"     ✓ Dynamic structural fix completed: {dest_path.name}")
             except Exception as e:
                 log(f"   ⚠️ Failed to establish asset layout configuration via hook: {e}")
+            finally:
+                os.environ["HF_HUB_OFFLINE"] = "1"
         else:
             log(f"   ✓ Verified asset presence: {dest_path.name}")
 
@@ -159,12 +159,17 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ─────────────────────────────────────────────────────────────────
 def download_file(url: str, dest: str, timeout: int = 120) -> str:
     log(f"  ⬇  {url}")
-    r = requests.get(url, stream=True, timeout=timeout)
-    r.raise_for_status()
-    with open(dest, "wb") as fh:
-        for chunk in r.iter_content(chunk_size=65_536):
-            fh.write(chunk)
-    log(f"     ✓ {os.path.getsize(dest)/1e6:.1f} MB")
+    # Temporarily drop offline switch to download transient target inputs
+    os.environ["HF_HUB_OFFLINE"] = "0"
+    try:
+        r = requests.get(url, stream=True, timeout=timeout)
+        r.raise_for_status()
+        with open(dest, "wb") as fh:
+            for chunk in r.iter_content(chunk_size=65_536):
+                fh.write(chunk)
+        log(f"     ✓ {os.path.getsize(dest)/1e6:.1f} MB")
+    finally:
+        os.environ["HF_HUB_OFFLINE"] = "1"
     return dest
 
 
@@ -223,10 +228,6 @@ def write_job_config(image_path, audio_path, output_path,
     with open(cfg_path, "w") as f:
         yaml.safe_dump(cfg, f)
 
-    log(f"  face_analysis.model_path : {cfg['face_analysis']['model_path']}")
-    log(f"  vae.model_path           : {cfg['vae']['model_path']}")
-    log(f"  audio_ckpt_dir           : {cfg['audio_ckpt_dir']}")
-
     return cfg_path
 
 
@@ -271,9 +272,6 @@ def handler(job: dict) -> dict:
         face_expand_ratio  = float(inp.get("face_expand_ratio",  1.2))
         steps              = int(inp.get("steps",                 40))
 
-        log(f"  pose={pose_weight}  face={face_weight}  lip={lip_weight}  "
-            f"expand={face_expand_ratio}  steps={steps}")
-
         output_path = str(Path(OUTPUT_DIR) / f"{job_id}.mp4")
 
         try:
@@ -286,7 +284,6 @@ def handler(job: dict) -> dict:
 
         cmd = [sys.executable, "scripts/inference.py", "--config", cfg_path]
         log(f"\n  Command: {' '.join(cmd)}\n")
-        log("  🚀 Launching Hallo processing routine…\n")
 
         try:
             current_ld = os.environ.get("LD_LIBRARY_PATH", "")
@@ -297,7 +294,9 @@ def handler(job: dict) -> dict:
                 **os.environ,
                 "PYTHONUNBUFFERED": "1",
                 "INSIGHTFACE_HOME": f"{HALLO_WEIGHTS}/face_analysis",
-                "LD_LIBRARY_PATH": new_ld
+                "LD_LIBRARY_PATH": new_ld,
+                "HF_HUB_OFFLINE": "1",
+                "TRANSFORMERS_OFFLINE": "1"
             }
 
             proc = subprocess.Popen(
@@ -320,14 +319,12 @@ def handler(job: dict) -> dict:
         except Exception as e:
             return {"error": f"Inference execution failed: {e}", "job_id": job_id}
 
-        log(f"\n  Return code: {return_code}")
-
         if return_code != 0:
             log_output = "\n".join(lines[-60:])
             if "#face is invalid: 0" in log_output or "empty axes" in log_output:
                 return {
                     "status": "failed",
-                    "error": "Face detection failed. The face is either missing, poorly lit, or invalid in the source image. Please sanitize, square-crop, and re-upload your portrait image.",
+                    "error": "Face detection failed. Ensure portrait image has a clear visible face.",
                     "job_id": job_id
                 }
             return {
@@ -344,10 +341,6 @@ def handler(job: dict) -> dict:
                 "job_id": job_id,
                 "dir":    [str(p) for p in Path(OUTPUT_DIR).iterdir()],
             }
-
-        log(f"  ✓ Found output video: {video_path}")
-        mb = os.path.getsize(video_path) / 1e6
-        log(f"  ⚙  Converting video stream to Base64 data payload…")
 
         try:
             with open(video_path, "rb") as f:
