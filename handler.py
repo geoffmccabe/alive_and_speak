@@ -1,6 +1,6 @@
 """
 RunPod Serverless Handler – Hallo
-Fully Automated Runtime Worker: Verifies, links, and downloads missing assets dynamically.
+Fully Automated Runtime Worker: Verifies, links, and builds missing structural assets dynamically.
 """
 
 import os
@@ -39,13 +39,29 @@ def initialize_and_enforce_assets():
     
     models_dir = Path(HALLO_WEIGHTS) / "face_analysis/models"
     buffalo_dir = models_dir / "buffalo_l"
+    wav2vec_dir = Path(HALLO_WEIGHTS) / "wav2vec/wav2vec2-base-960h"
     
     # Enforce directory layouts
     models_dir.mkdir(parents=True, exist_ok=True)
     buffalo_dir.mkdir(parents=True, exist_ok=True)
+    wav2vec_dir.mkdir(parents=True, exist_ok=True)
 
-    # Checklist for missing download requirements
-    # Includes w600k_r50.onnx from the public insightface repo to fix KeyError: 'embedding'
+    # Convert safetensors to pytorch_model.bin locally if needed
+    safetensors_weight = wav2vec_dir / "model.safetensors"
+    pytorch_weight = wav2vec_dir / "pytorch_model.bin"
+    
+    if safetensors_weight.exists() and not pytorch_weight.exists():
+        log("   ⚙️ Found 'model.safetensors' for wav2vec. Converting to required 'pytorch_model.bin' layout...")
+        try:
+            from safetensors.torch import load_file
+            import torch
+            tensors = load_file(str(safetensors_weight))
+            torch.save(tensors, str(pytorch_weight))
+            log("     ✓ Safetensors conversion successful!")
+        except Exception as conv_err:
+            log(f"     ⚠️ Automatic structural weight translation failed: {conv_err}")
+
+    # Checklist for structural safety targets
     download_targets = [
         (
             "https://huggingface.co/fudan-generative-ai/hallo2/resolve/main/face_analysis/models/face_landmarker_v2_with_blendshapes.task",
@@ -62,12 +78,28 @@ def initialize_and_enforce_assets():
         (
             "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx",
             buffalo_dir / "w600k_r50.onnx"
+        ),
+        # Fallback downloads if files are missing or conversion didn't happen
+        (
+            "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/main/config.json",
+            wav2vec_dir / "config.json"
+        ),
+        (
+            "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/main/preprocessor_config.json",
+            wav2vec_dir / "preprocessor_config.json"
         )
     ]
 
+    # Handle final file validation loops
+    if not pytorch_weight.exists() or pytorch_weight.stat().st_size == 0:
+        download_targets.append((
+            "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/main/pytorch_model.bin",
+            pytorch_weight
+        ))
+
     for url, dest_path in download_targets:
         if not dest_path.exists() or dest_path.stat().st_size == 0:
-            log(f"   ✗ Missing required asset: {dest_path.name}. Downloading at runtime...")
+            log(f"   ✗ Missing required asset: {dest_path.parent.name}/{dest_path.name}. Repairing target layout...")
             try:
                 with requests.get(url, stream=True, timeout=300) as r:
                     r.raise_for_status()
@@ -75,9 +107,9 @@ def initialize_and_enforce_assets():
                         for chunk in r.iter_content(chunk_size=1024 * 1024):
                             if chunk:
                                 f.write(chunk)
-                log(f"     ✓ Dynamic download complete: {dest_path.name}")
+                log(f"     ✓ Dynamic structural fix completed: {dest_path.name}")
             except Exception as e:
-                log(f"   ⚠️ Failed to install asset via runtime hook: {e}")
+                log(f"   ⚠️ Failed to establish asset layout configuration via hook: {e}")
         else:
             log(f"   ✓ Verified asset presence: {dest_path.name}")
 
@@ -291,10 +323,17 @@ def handler(job: dict) -> dict:
         log(f"\n  Return code: {return_code}")
 
         if return_code != 0:
+            log_output = "\n".join(lines[-60:])
+            if "#face is invalid: 0" in log_output or "empty axes" in log_output:
+                return {
+                    "status": "failed",
+                    "error": "Face detection failed. The face is either missing, poorly lit, or invalid in the source image. Please sanitize, square-crop, and re-upload your portrait image.",
+                    "job_id": job_id
+                }
             return {
                 "error":      "Pipeline processing failed",
                 "returncode": return_code,
-                "output":     "\n".join(lines[-60:]),
+                "output":     log_output,
                 "job_id":     job_id,
             }
 
