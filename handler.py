@@ -1,6 +1,5 @@
 """
 RunPod Serverless Handler – Hallo
-Fully Automated Runtime Worker: Verifies, links, and downloads missing assets dynamically.
 """
 
 import os
