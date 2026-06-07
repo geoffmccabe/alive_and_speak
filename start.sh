@@ -9,18 +9,18 @@ HALLO_WEIGHTS="${HALLO_WEIGHTS:-/runpod-volume/weights/hallo}"
 echo "  HALLO_WEIGHTS : ${HALLO_WEIGHTS}"
 echo ""
 
-# ── Critical: link /app/pretrained_models → volume ────────────────
-# default.yaml uses relative paths like ./pretrained_models/face_analysis
-# inference.py runs with cwd=/app, so /app/pretrained_models must exist
+# /app/pretrained_models → volume (relative paths in default.yaml)
 if [[ ! -L "/app/pretrained_models" ]]; then
-    if [[ -d "/app/pretrained_models" ]]; then
-        mv /app/pretrained_models /app/pretrained_models.bak
-    fi
+    [[ -d "/app/pretrained_models" ]] && mv /app/pretrained_models /app/pretrained_models.bak
     ln -sf "${HALLO_WEIGHTS}" /app/pretrained_models
     echo "  ✓ Linked /app/pretrained_models → ${HALLO_WEIGHTS}"
 else
     echo "  ✓ /app/pretrained_models already linked"
 fi
+
+# .cache dir — Hallo's tensor_to_video hardcodes ".cache/output.mp4" relative to cwd=/app
+mkdir -p /app/.cache
+echo "  ✓ /app/.cache ready"
 
 echo ""
 echo "  Checking model files:"
