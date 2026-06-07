@@ -2,11 +2,14 @@
 RunPod Serverless Handler – Hallo
 https://github.com/fudan-generative-vision/hallo
 
-InsightFace path note:
-  inference.py runs with cwd=/app and resolves model paths as:
-    ./pretrained_models/face_analysis/models/*.onnx
-  So the volume models dir must be linked to /app/pretrained_models/face_analysis/models
-  start.sh handles this; handler also ensures it at runtime.
+Config structure (from configs/inference/default.yaml):
+  face_analysis.model_path      ← nested, NOT face_analysis_model_path
+  vae.model_path
+  wav2vec.model_path
+  audio_separator.model_path
+  audio_ckpt_dir                ← flat
+  base_model_path               ← flat
+  motion_module_path            ← flat
 """
 
 import os
@@ -23,9 +26,6 @@ from typing import Union
 
 import runpod
 
-# ─────────────────────────────────────────────────────────────────
-#  Paths
-# ─────────────────────────────────────────────────────────────────
 HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS", "/runpod-volume/weights/hallo")
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",    "/tmp/hallo_outputs")
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))
@@ -40,43 +40,29 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-# ─────────────────────────────────────────────────────────────────
-#  InsightFace CWD fix
-#  InsightFace resolves onnx paths relative to cwd (/app), as:
-#    ./pretrained_models/face_analysis/models/*.onnx
-#  We symlink that path to the real volume location.
-# ─────────────────────────────────────────────────────────────────
 def fix_insightface_cwd_path() -> None:
-    target = Path("/app/pretrained_models/face_analysis/models")
-    source = Path(HALLO_WEIGHTS) / "face_analysis" / "models"
-
-    if not source.exists():
-        log(f"  ⚠  face_analysis/models not found at {source}")
-        return
-
-    target.parent.mkdir(parents=True, exist_ok=True)
+    """
+    inference.py runs with cwd=/app. InsightFace resolves onnx paths relative
+    to cwd when face_analysis.model_path is a relative path like ./pretrained_models/...
+    We symlink /app/pretrained_models → volume so all relative paths resolve correctly.
+    """
+    target = Path("/app/pretrained_models")
+    source = Path(HALLO_WEIGHTS)
 
     if target.is_symlink():
-        if Path(os.readlink(target)) == source:
-            log(f"  ✓ InsightFace path already linked correctly")
-            return
-        else:
-            target.unlink()  # stale link — recreate
+        log(f"  ✓ /app/pretrained_models already linked")
+        return
 
     if target.exists():
-        # real directory in the way — rename it
-        target.rename(str(target) + ".bak")
+        target.rename("/app/pretrained_models.bak")
 
     target.symlink_to(source)
-    log(f"  ✓ Linked /app/pretrained_models/face_analysis/models → {source}")
+    log(f"  ✓ Linked /app/pretrained_models → {source}")
 
 
 fix_insightface_cwd_path()
 
 
-# ─────────────────────────────────────────────────────────────────
-#  Helpers
-# ─────────────────────────────────────────────────────────────────
 def download_file(url: str, dest: str, timeout: int = 120) -> str:
     log(f"  ⬇  {url}")
     r = requests.get(url, stream=True, timeout=timeout)
@@ -108,36 +94,53 @@ def write_job_config(image_path, audio_path, output_path,
     with open(base_cfg) as f:
         cfg = yaml.safe_load(f)
 
-    cfg["source_image"]             = image_path
-    cfg["driving_audio"]            = audio_path
-    cfg["save_path"]                = output_path
-    cfg["output_dir"]               = OUTPUT_DIR
-    cfg["base_model_path"]          = f"{HALLO_WEIGHTS}/stable-diffusion-v1-5"
-    cfg["motion_module_path"]       = f"{HALLO_WEIGHTS}/motion_module/mm_sd_v15_v2.ckpt"
-    cfg["vae_model_path"]           = f"{HALLO_WEIGHTS}/sd-vae-ft-mse"
-    cfg["ckpt_path"]                = f"{HALLO_WEIGHTS}/hallo/net.pth"
-    cfg["audio_ckpt_dir"]           = f"{HALLO_WEIGHTS}/wav2vec/wav2vec2-base-960h"
-    # This must match what inference.py passes to ImageProcessor,
-    # which then passes it as `root` to FaceAnalysis(name="", root=...)
-    # InsightFace then looks at: root/models/ for onnx files.
-    # With our cwd symlink in place, "./pretrained_models/face_analysis"
-    # resolves to the volume. We set the absolute path here too.
-    cfg["face_analysis_model_path"] = f"{HALLO_WEIGHTS}/face_analysis"
-    cfg["inference_steps"]          = steps
-    cfg["pose_weight"]              = pose_weight
-    cfg["face_weight"]              = face_weight
-    cfg["lip_weight"]               = lip_weight
-    cfg["face_expand_ratio"]        = face_expand_ratio
+    # ── Top-level inputs/outputs ──────────────────────────────────
+    cfg["source_image"] = image_path
+    cfg["driving_audio"] = audio_path
+    cfg["save_path"]    = output_path
+
+    # ── Flat weight paths ─────────────────────────────────────────
+    cfg["base_model_path"]    = f"{HALLO_WEIGHTS}/stable-diffusion-v1-5"
+    cfg["motion_module_path"] = f"{HALLO_WEIGHTS}/motion_module/mm_sd_v15_v2.ckpt"
+    cfg["audio_ckpt_dir"]     = f"{HALLO_WEIGHTS}/hallo"
+
+    # ── Nested weight paths (must match yaml structure exactly) ───
+    if not isinstance(cfg.get("face_analysis"), dict):
+        cfg["face_analysis"] = {}
+    cfg["face_analysis"]["model_path"] = f"{HALLO_WEIGHTS}/face_analysis"
+
+    if not isinstance(cfg.get("wav2vec"), dict):
+        cfg["wav2vec"] = {}
+    cfg["wav2vec"]["model_path"] = f"{HALLO_WEIGHTS}/wav2vec/wav2vec2-base-960h"
+    cfg["wav2vec"].setdefault("features", "all")
+
+    if not isinstance(cfg.get("vae"), dict):
+        cfg["vae"] = {}
+    cfg["vae"]["model_path"] = f"{HALLO_WEIGHTS}/sd-vae-ft-mse"
+
+    if not isinstance(cfg.get("audio_separator"), dict):
+        cfg["audio_separator"] = {}
+    cfg["audio_separator"]["model_path"] = f"{HALLO_WEIGHTS}/audio_separator/Kim_Vocal_2.onnx"
+
+    # ── Hyperparams ───────────────────────────────────────────────
+    cfg["inference_steps"]   = steps
+    cfg["pose_weight"]       = pose_weight
+    cfg["face_weight"]       = face_weight
+    cfg["lip_weight"]        = lip_weight
+    cfg["face_expand_ratio"] = face_expand_ratio
 
     cfg_path = str(tmp_dir / "job_config.yaml")
     with open(cfg_path, "w") as f:
         yaml.safe_dump(cfg, f)
+
+    # Log the resolved paths so we can verify in logs
+    log(f"  face_analysis.model_path : {cfg['face_analysis']['model_path']}")
+    log(f"  vae.model_path           : {cfg['vae']['model_path']}")
+    log(f"  audio_ckpt_dir           : {cfg['audio_ckpt_dir']}")
+
     return cfg_path
 
 
-# ─────────────────────────────────────────────────────────────────
-#  Handler
-# ─────────────────────────────────────────────────────────────────
 def handler(job: dict) -> dict:
     job_id = job["id"]
     inp    = job["input"]
@@ -150,7 +153,6 @@ def handler(job: dict) -> dict:
     with tempfile.TemporaryDirectory(prefix=f"hallo_{job_id}_") as _tmp:
         tmp = Path(_tmp)
 
-        # Download image
         image_url = inp.get("image_url")
         if not image_url:
             return {"error": "'image_url' is required", "job_id": job_id}
@@ -161,7 +163,6 @@ def handler(job: dict) -> dict:
         except Exception as e:
             return {"error": f"Image download failed: {e}", "job_id": job_id}
 
-        # Download audio
         audio_url = inp.get("audio_url")
         if not audio_url:
             return {"error": "'audio_url' is required", "job_id": job_id}
@@ -172,7 +173,6 @@ def handler(job: dict) -> dict:
         except Exception as e:
             return {"error": f"Audio download failed: {e}", "job_id": job_id}
 
-        # Parameters
         pose_weight       = float(inp.get("pose_weight",       1.0))
         face_weight       = float(inp.get("face_weight",       1.0))
         lip_weight        = float(inp.get("lip_weight",        1.0))
@@ -184,7 +184,6 @@ def handler(job: dict) -> dict:
 
         output_path = str(Path(OUTPUT_DIR) / f"{job_id}.mp4")
 
-        # Build config
         try:
             cfg_path = write_job_config(
                 image_path, audio_path, output_path,
@@ -193,9 +192,8 @@ def handler(job: dict) -> dict:
         except Exception as e:
             return {"error": f"Config failed: {e}", "job_id": job_id}
 
-        # Run inference
         cmd = [sys.executable, "scripts/inference.py", "--config", cfg_path]
-        log(f"  Command: {' '.join(cmd)}\n")
+        log(f"\n  Command: {' '.join(cmd)}\n")
         log("  🚀 Launching Hallo…\n")
 
         try:
@@ -229,7 +227,6 @@ def handler(job: dict) -> dict:
                 "job_id":     job_id,
             }
 
-        # Find and encode output
         video_path = find_output_video(OUTPUT_DIR, job_id)
         if not video_path:
             return {
