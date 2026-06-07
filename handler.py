@@ -1,6 +1,6 @@
 """
 RunPod Serverless Handler – Hallo
-Fully Automated Runtime Worker: Verifies, links, and builds missing structural assets dynamically.
+Dynamic Path Symlink-Safe Version
 """
 
 import os
@@ -19,13 +19,34 @@ from typing import Union
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
-#  Paths & Critical Environment Setup
+# 🧭 DYNAMIC PATH & ENVIRONMENT RESOLUTION (Pod vs Serverless)
 # ─────────────────────────────────────────────────────────────────
-HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS",      "/runpod-volume/weights/hallo")
-OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",         "/tmp/hallo_outputs")
+def resolve_hallo_weights_root() -> str:
+    """
+    Safely resolves the path whether running in an interactive Pod or Serverless,
+    accounting for RunPod's workspace-to-volume symlinking structure.
+    """
+    if os.environ.get("HALLO_WEIGHTS"):
+        return os.environ.get("HALLO_WEIGHTS")
+        
+    serverless_path = Path("/runpod-volume/weights/hallo")
+    pod_path = Path("/workspace/weights/hallo")
+    
+    # Resolve the real path to bypass symlink collisions
+    if serverless_path.exists():
+        print(f"🧭 [Auto-Detect] Serverless environment: {serverless_path}", flush=True)
+        return str(serverless_path.resolve())
+    elif pod_path.exists():
+        print(f"🧭 [Auto-Detect] Interactive Pod environment: {pod_path}", flush=True)
+        return str(pod_path.resolve())
+        
+    return "/runpod-volume/weights/hallo"
+
+HALLO_WEIGHTS      = resolve_hallo_weights_root()
+OUTPUT_DIR         = "/tmp/hallo_outputs"
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))
 
-# Absolute offline environment enforcement
+# Enforce strict offline configurations
 os.environ["HF_HOME"]               = HALLO_WEIGHTS
 os.environ["TRANSFORMERS_CACHE"]    = HALLO_WEIGHTS
 os.environ["HF_HUB_OFFLINE"]        = "1"
@@ -35,22 +56,29 @@ os.environ["TRANSFORMERS_OFFLINE"]  = "1"
 def log(msg: str) -> None:
     print(msg, flush=True)
 
+def safe_mkdir(target_path: Path):
+    """Symlink-safe directory creation to prevent Errno 17 FileExistsError."""
+    if not target_path.exists():
+        try:
+            os.makedirs(str(target_path), exist_ok=True)
+        except FileExistsError:
+            pass
+
 # ─────────────────────────────────────────────────────────────────
-#  🎯 AUTOMATED RUNTIME INSTALLATION & VERIFICATION LAYER
+# 🎯 AUTOMATED RUNTIME ASSET REPAIR LAYER
 # ─────────────────────────────────────────────────────────────────
 def initialize_and_enforce_assets():
-    log("⏳ Initiating runtime verification and asset deployment checklist...")
+    log(f"⏳ Initiating layout validation using base path target: {HALLO_WEIGHTS}")
     
     models_dir = Path(HALLO_WEIGHTS) / "face_analysis/models"
     buffalo_dir = models_dir / "buffalo_l"
     wav2vec_dir = Path(HALLO_WEIGHTS) / "wav2vec/wav2vec2-base-960h"
     
-    # Enforce directory layouts
-    models_dir.mkdir(parents=True, exist_ok=True)
-    buffalo_dir.mkdir(parents=True, exist_ok=True)
-    wav2vec_dir.mkdir(parents=True, exist_ok=True)
+    safe_mkdir(models_dir)
+    safe_mkdir(buffalo_dir)
+    safe_mkdir(wav2vec_dir)
 
-    # Convert safetensors to pytorch_model.bin locally if needed to bypass wav2vec online call
+    # 🛠️ SAFETENSORS TO PYTORCH_MODEL.BIN CONVERSION
     safetensors_weight = wav2vec_dir / "model.safetensors"
     pytorch_weight = wav2vec_dir / "pytorch_model.bin"
     
@@ -65,7 +93,7 @@ def initialize_and_enforce_assets():
         except Exception as conv_err:
             log(f"     ⚠️ Automatic structural weight translation failed: {conv_err}")
 
-    # Checklist for structural safety targets
+    # Core checklist for download layouts if missing
     download_targets = [
         (
             "https://huggingface.co/fudan-generative-ai/hallo2/resolve/main/face_analysis/models/face_landmarker_v2_with_blendshapes.task",
@@ -82,22 +110,13 @@ def initialize_and_enforce_assets():
         (
             "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx",
             buffalo_dir / "w600k_r50.onnx"
-        ),
-        (
-            "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/main/config.json",
-            wav2vec_dir / "config.json"
-        ),
-        (
-            "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/main/preprocessor_config.json",
-            wav2vec_dir / "preprocessor_config.json"
         )
     ]
 
     for url, dest_path in download_targets:
         if not dest_path.exists() or dest_path.stat().st_size == 0:
-            log(f"   ✗ Missing required asset: {dest_path.parent.name}/{dest_path.name}. Repairing target layout...")
+            log(f"   ✗ Missing target configuration: {dest_path.name}. Repairing alignment...")
             try:
-                # temporarily turn off offline mode to fetch framework metadata elements if completely missing
                 os.environ["HF_HUB_OFFLINE"] = "0"
                 with requests.get(url, stream=True, timeout=300) as r:
                     r.raise_for_status()
@@ -105,51 +124,38 @@ def initialize_and_enforce_assets():
                         for chunk in r.iter_content(chunk_size=1024 * 1024):
                             if chunk:
                                 f.write(chunk)
-                log(f"     ✓ Dynamic structural fix completed: {dest_path.name}")
+                log(f"     ✓ Fixed asset alignment layout: {dest_path.name}")
             except Exception as e:
-                log(f"   ⚠️ Failed to establish asset layout configuration via hook: {e}")
+                log(f"   ⚠️ Layout establishment hook failed: {e}")
             finally:
                 os.environ["HF_HUB_OFFLINE"] = "1"
         else:
             log(f"   ✓ Verified asset presence: {dest_path.name}")
 
-    # Fix InsightFace flat layout requirements (Link buffalo_l/*.onnx up into models/)
-    log("   ⚙ Ensuring flat ONNX visibility links for InsightFace wrappers...")
+    # Align ONNX flat files for InsightFace wrappers
     for onnx_file in buffalo_dir.glob("*.onnx"):
         flat_link_target = models_dir / onnx_file.name
         if not flat_link_target.exists() and not flat_link_target.is_symlink():
             try:
                 flat_link_target.symlink_to(onnx_file)
-                log(f"     ✓ Linked: {onnx_file.name} -> models/")
-            except Exception as link_err:
-                log(f"     ⚠️ Link pairing warning for {onnx_file.name}: {link_err}")
+            except Exception:
+                pass
 
-    # Bind app path routes inside execution paths
+    # Anchor target paths inside execution environments cleanly
     for base_prefix in ["/app", ""]:
         target_models_dir = f"{base_prefix}/pretrained_models/face_analysis/models"
         try:
-            os.makedirs(os.path.dirname(target_models_dir), exist_ok=True)
             if os.path.exists(target_models_dir) or os.path.islink(target_models_dir):
                 if os.path.islink(target_models_dir):
                     os.unlink(target_models_dir)
                 else:
                     shutil.rmtree(target_models_dir)
-            
+            os.makedirs(os.path.dirname(target_models_dir), exist_ok=True)
             os.symlink(str(models_dir), target_models_dir)
-            log(f"   ✓ Anchored route: {target_models_dir} -> {models_dir}")
-        except Exception as link_err:
-            log(f"   ⚠️ Folder routing exception for {target_models_dir}: {link_err}")
+        except Exception:
+            pass
 
-    # Build localized .zip hook for string layout checks
-    try:
-        volume_zip_fallback = models_dir / ".zip"
-        if not volume_zip_fallback.exists() and not volume_zip_fallback.is_symlink():
-            volume_zip_fallback.symlink_to(models_dir)
-            log(f"   ✓ Anchored internal string fallback alignment asset")
-    except Exception as fallback_err:
-        pass
-
-# Run initialization sequence before activating listening workers
+# Execute verification before running worker
 initialize_and_enforce_assets()
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -159,7 +165,6 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ─────────────────────────────────────────────────────────────────
 def download_file(url: str, dest: str, timeout: int = 120) -> str:
     log(f"  ⬇  {url}")
-    # Temporarily drop offline switch to download transient target inputs
     os.environ["HF_HUB_OFFLINE"] = "0"
     try:
         r = requests.get(url, stream=True, timeout=timeout)
@@ -240,7 +245,7 @@ def handler(job: dict) -> dict:
 
     log(f"\n{'═'*60}")
     log(f"  Hallo Job : {job_id}")
-    log(f"  Keys      : {list(inp.keys())}")
+    log(f"  Dynamic Weight Target Location: {HALLO_WEIGHTS}")
     log(f"{'═'*60}\n")
 
     with tempfile.TemporaryDirectory(prefix=f"hallo_{job_id}_") as _tmp:
@@ -283,7 +288,6 @@ def handler(job: dict) -> dict:
             return {"error": f"Config compilation failed: {e}", "job_id": job_id}
 
         cmd = [sys.executable, "scripts/inference.py", "--config", cfg_path]
-        log(f"\n  Command: {' '.join(cmd)}\n")
 
         try:
             current_ld = os.environ.get("LD_LIBRARY_PATH", "")
@@ -321,12 +325,6 @@ def handler(job: dict) -> dict:
 
         if return_code != 0:
             log_output = "\n".join(lines[-60:])
-            if "#face is invalid: 0" in log_output or "empty axes" in log_output:
-                return {
-                    "status": "failed",
-                    "error": "Face detection failed. Ensure portrait image has a clear visible face.",
-                    "job_id": job_id
-                }
             return {
                 "error":      "Pipeline processing failed",
                 "returncode": return_code,
