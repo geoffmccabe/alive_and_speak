@@ -1,5 +1,5 @@
 """
-RunPod Serverless Handler – Hallo
+
 """
 
 import os
