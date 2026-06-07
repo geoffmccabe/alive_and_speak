@@ -1,4 +1,7 @@
-
+"""
+RunPod Serverless Handler – Hallo
+Fully Automated Runtime Worker: Verifies, links, and downloads missing assets dynamically.
+"""
 
 import os
 import sys
@@ -37,23 +40,23 @@ def initialize_and_enforce_assets():
     models_dir = Path(HALLO_WEIGHTS) / "face_analysis/models"
     buffalo_dir = models_dir / "buffalo_l"
     
-    # 1. Enforce directory layouts
+    # Enforce directory layouts
     models_dir.mkdir(parents=True, exist_ok=True)
     buffalo_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. Checklist for missing download requirements
-    # Format: (Target URL, Destination Path)
+    # Checklist for missing download requirements
+    # FIXED: Verified URLs targeting real repository structures on Hugging Face
     download_targets = [
         (
             "https://huggingface.co/fudan-generative-ai/hallo2/resolve/main/face_analysis/models/face_landmarker_v2_with_blendshapes.task",
             models_dir / "face_landmarker_v2_with_blendshapes.task"
         ),
         (
-            "https://huggingface.co/fudan-generative-ai/hallo/resolve/main/face_analysis/models/1k3d68.onnx",
+            "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/1k3d68.onnx",
             buffalo_dir / "1k3d68.onnx"
         ),
         (
-            "https://huggingface.co/fudan-generative-ai/hallo/resolve/main/face_analysis/models/det_10g.onnx",
+            "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/det_10g.onnx",
             buffalo_dir / "det_10g.onnx"
         )
     ]
@@ -62,7 +65,6 @@ def initialize_and_enforce_assets():
         if not dest_path.exists() or dest_path.stat().st_size == 0:
             log(f"   ✗ Missing required asset: {dest_path.name}. Downloading at runtime...")
             try:
-                # Use stream processing to minimize RAM footprints during network operations
                 with requests.get(url, stream=True, timeout=300) as r:
                     r.raise_for_status()
                     with open(dest_path, "wb") as f:
@@ -75,18 +77,18 @@ def initialize_and_enforce_assets():
         else:
             log(f"   ✓ Verified asset presence: {dest_path.name}")
 
-    # 3. Fix InsightFace flat layout requirements (Link buffalo_l/*.onnx up into models/)
+    # Fix InsightFace flat layout requirements (Link buffalo_l/*.onnx up into models/)
     log("   ⚙ Ensuring flat ONNX visibility links for InsightFace wrappers...")
     for onnx_file in buffalo_dir.glob("*.onnx"):
         flat_link_target = models_dir / onnx_file.name
-        if not flat_link_target.exists() and not flat_link_target.is_link():
+        if not flat_link_target.exists() and not flat_link_target.is_symlink():
             try:
                 flat_link_target.symlink_to(onnx_file)
                 log(f"     ✓ Linked: {onnx_file.name} -> models/")
             except Exception as link_err:
                 log(f"     ⚠️ Link pairing warning for {onnx_file.name}: {link_err}")
 
-    # 4. Bind app path routes inside execution paths
+    # Bind app path routes inside execution paths
     for base_prefix in ["/app", ""]:
         target_models_dir = f"{base_prefix}/pretrained_models/face_analysis/models"
         try:
@@ -102,10 +104,10 @@ def initialize_and_enforce_assets():
         except Exception as link_err:
             log(f"   ⚠️ Folder routing exception for {target_models_dir}: {link_err}")
 
-    # 5. Build localized .zip hook for string layout checks
+    # Build localized .zip hook for string layout checks
     try:
         volume_zip_fallback = models_dir / ".zip"
-        if not volume_zip_fallback.exists() and not volume_zip_fallback.is_link():
+        if not volume_zip_fallback.exists() and not volume_zip_fallback.is_symlink():
             volume_zip_fallback.symlink_to(models_dir)
             log(f"   ✓ Anchored internal string fallback alignment asset")
     except Exception as fallback_err:
