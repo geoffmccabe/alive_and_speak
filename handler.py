@@ -2,17 +2,11 @@
 RunPod Serverless Handler – Hallo
 https://github.com/fudan-generative-vision/hallo
 
-Path resolution (from reading inference.py + insightface source):
-  - inference.py runs cwd=/app
-  - InsightFace calls FaceAnalysis(name="", root=face_analysis_model_path)
-  - ensure_available resolves dir_path = root/models/  (name="" → flat)
-  - glob(root/models/*.onnx) — onnx files must be FLAT in models/, not in buffalo_l/
-  - get_model receives full abs path, asserts osp.exists(model_file)
-  - The config face_analysis.model_path is passed as `root`
-  - So: root/models/*.onnx must all exist as real files or symlinks
-
-  Fix: at startup, symlink buffalo_l/*.onnx → models/*.onnx (flat)
-  Also: download any missing onnx files directly from HuggingFace
+Final known issue (from logs):
+  Hallo's tensor_to_video() in util.py hardcodes the output as:
+    ".cache/output.mp4"  (relative to cwd=/app)
+  So /app/.cache/ must exist. We create it at startup.
+  The final video lands at /app/.cache/output.mp4 — we read it from there.
 """
 
 import os
@@ -24,6 +18,7 @@ import tempfile
 import subprocess
 import asyncio
 import yaml
+import shutil
 from pathlib import Path
 from typing import Union
 
@@ -31,7 +26,7 @@ import runpod
 
 HALLO_WEIGHTS      = os.environ.get("HALLO_WEIGHTS", "/runpod-volume/weights/hallo")
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",    "/tmp/hallo_outputs")
-GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "60000"))
+GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "600"))
 
 os.environ["HF_HOME"]            = HALLO_WEIGHTS
 os.environ["TRANSFORMERS_CACHE"] = HALLO_WEIGHTS
@@ -59,18 +54,8 @@ def download_file(url: str, dest: str, timeout: int = 180) -> bool:
         return False
 
 
-# ─────────────────────────────────────────────────────────────────
-#  Model readiness — runs once at startup
-# ─────────────────────────────────────────────────────────────────
 def ensure_models_ready() -> None:
-    """
-    1. Ensure all buffalo_l onnx files exist (download if missing)
-    2. Symlink buffalo_l/*.onnx flat into models/ (InsightFace needs this)
-    3. Convert wav2vec safetensors → pytorch_model.bin if needed
-    4. Download face_landmarker task file if missing
-    5. Symlink /app/pretrained_models → HALLO_WEIGHTS for relative path resolution
-    """
-    weights  = Path(HALLO_WEIGHTS)
+    weights     = Path(HALLO_WEIGHTS)
     models_dir  = weights / "face_analysis" / "models"
     buffalo_dir = models_dir / "buffalo_l"
 
@@ -85,7 +70,6 @@ def ensure_models_ready() -> None:
         "genderage.onnx": "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/genderage.onnx",
         "w600k_r50.onnx": "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx",
     }
-
     for fname, url in onnx_files.items():
         fpath = buffalo_dir / fname
         if not fpath.exists() or fpath.stat().st_size < 1000:
@@ -94,8 +78,7 @@ def ensure_models_ready() -> None:
         else:
             log(f"  ✓  {fname} ({fpath.stat().st_size/1e6:.1f} MB)")
 
-    # ── 2. Symlink buffalo_l/*.onnx flat into models/ ─────────────
-    # InsightFace with name="" globs models/*.onnx directly (not in subdir)
+    # ── 2. Flat symlinks into models/ ────────────────────────────
     linked = 0
     for src in buffalo_dir.glob("*.onnx"):
         dst = models_dir / src.name
@@ -103,11 +86,11 @@ def ensure_models_ready() -> None:
             dst.symlink_to(src.resolve())
             linked += 1
     if linked:
-        log(f"  ✓  Symlinked {linked} .onnx files flat into models/")
+        log(f"  ✓  Symlinked {linked} .onnx flat into models/")
     else:
         log(f"  ✓  models/ flat layout already in place")
 
-    # ── 3. face_landmarker task file ──────────────────────────────
+    # ── 3. face_landmarker task ───────────────────────────────────
     landmarker = models_dir / "face_landmarker_v2_with_blendshapes.task"
     if not landmarker.exists():
         log(f"  ⚠  Missing face_landmarker — downloading…")
@@ -117,10 +100,9 @@ def ensure_models_ready() -> None:
         )
 
     # ── 4. wav2vec safetensors → pytorch_model.bin ───────────────
-    wav2vec_dir       = weights / "wav2vec" / "wav2vec2-base-960h"
-    pytorch_weight    = wav2vec_dir / "pytorch_model.bin"
-    safetensors_weight= wav2vec_dir / "model.safetensors"
-
+    wav2vec_dir        = weights / "wav2vec" / "wav2vec2-base-960h"
+    pytorch_weight     = wav2vec_dir / "pytorch_model.bin"
+    safetensors_weight = wav2vec_dir / "model.safetensors"
     if safetensors_weight.exists() and not pytorch_weight.exists():
         log("  ⚙  Converting wav2vec safetensors → pytorch_model.bin…")
         try:
@@ -132,13 +114,10 @@ def ensure_models_ready() -> None:
         except Exception as e:
             log(f"  ⚠  Conversion failed: {e}")
 
-    # ── 5. /app/pretrained_models → HALLO_WEIGHTS symlink ────────
-    # inference.py cwd=/app, default.yaml uses ./pretrained_models/...
-    # This makes all relative paths in the config resolve correctly
+    # ── 5. /app/pretrained_models → HALLO_WEIGHTS ────────────────
     app_pretrained = Path("/app/pretrained_models")
     if app_pretrained.is_symlink():
-        current = Path(os.readlink(str(app_pretrained)))
-        if current.resolve() != weights.resolve():
+        if Path(os.readlink(str(app_pretrained))).resolve() != weights.resolve():
             app_pretrained.unlink()
             app_pretrained.symlink_to(weights.resolve())
             log(f"  ✓  Re-linked /app/pretrained_models → {weights}")
@@ -152,17 +131,19 @@ def ensure_models_ready() -> None:
         app_pretrained.symlink_to(weights.resolve())
         log(f"  ✓  Linked /app/pretrained_models → {weights}")
 
+    # ── 6. /app/.cache — Hallo writes final video here ───────────
+    # tensor_to_video() hardcodes ".cache/output.mp4" relative to cwd=/app
+    cache_dir = Path("/app/.cache")
+    cache_dir.mkdir(exist_ok=True)
+    log(f"  ✓  /app/.cache ready")
+
     log("  ✓  Model readiness check complete")
 
 
-# Run at import time — before first job
 log("⏳ Running model readiness check…")
 ensure_models_ready()
 
 
-# ─────────────────────────────────────────────────────────────────
-#  Per-request helpers
-# ─────────────────────────────────────────────────────────────────
 def download_input(url: str, dest: str) -> str:
     log(f"  ⬇  {url}")
     r = requests.get(url, stream=True, timeout=120)
@@ -174,12 +155,26 @@ def download_input(url: str, dest: str) -> str:
     return dest
 
 
-def find_output_video(save_dir: str, job_id: str) -> Union[str, None]:
-    exact = Path(save_dir) / f"{job_id}.mp4"
-    if exact.exists() and exact.stat().st_size > 0:
-        return str(exact)
-    for p in sorted(Path(save_dir).glob("*.mp4")):
-        if p.stat().st_size > 0 and job_id[:8] in p.name:
+def find_output_video(job_id: str) -> Union[str, None]:
+    """
+    Hallo's tensor_to_video writes to .cache/output.mp4 (relative to cwd=/app).
+    The config save_path is also set but may be overridden internally.
+    Check both locations.
+    """
+    candidates = [
+        Path("/app/.cache/output.mp4"),
+        Path(OUTPUT_DIR) / f"{job_id}.mp4",
+        Path("/app/.cache") / f"{job_id}.mp4",
+    ]
+    for p in candidates:
+        if p.exists() and p.stat().st_size > 0:
+            return str(p)
+    # Glob fallback
+    for p in sorted(Path(OUTPUT_DIR).glob("*.mp4")):
+        if p.stat().st_size > 0:
+            return str(p)
+    for p in sorted(Path("/app/.cache").glob("*.mp4")):
+        if p.stat().st_size > 0:
             return str(p)
     return None
 
@@ -196,15 +191,13 @@ def write_job_config(image_path, audio_path, output_path,
 
     W = HALLO_WEIGHTS
 
-    # Top-level
-    cfg["source_image"]    = image_path
-    cfg["driving_audio"]   = audio_path
-    cfg["save_path"]       = output_path
-    cfg["audio_ckpt_dir"]  = f"{W}/hallo"
-    cfg["base_model_path"] = f"{W}/stable-diffusion-v1-5"
+    cfg["source_image"]       = image_path
+    cfg["driving_audio"]      = audio_path
+    cfg["save_path"]          = output_path
+    cfg["audio_ckpt_dir"]     = f"{W}/hallo"
+    cfg["base_model_path"]    = f"{W}/stable-diffusion-v1-5"
     cfg["motion_module_path"] = f"{W}/motion_module/mm_sd_v15_v2.ckpt"
 
-    # Nested keys — must match yaml structure exactly
     if not isinstance(cfg.get("face_analysis"), dict):
         cfg["face_analysis"] = {}
     cfg["face_analysis"]["model_path"] = f"{W}/face_analysis"
@@ -235,13 +228,9 @@ def write_job_config(image_path, audio_path, output_path,
     log(f"  face_analysis.model_path : {cfg['face_analysis']['model_path']}")
     log(f"  vae.model_path           : {cfg['vae']['model_path']}")
     log(f"  audio_ckpt_dir           : {cfg['audio_ckpt_dir']}")
-    log(f"  audio_separator          : {cfg['audio_separator']['model_path']}")
     return cfg_path
 
 
-# ─────────────────────────────────────────────────────────────────
-#  Handler
-# ─────────────────────────────────────────────────────────────────
 def handler(job: dict) -> dict:
     job_id = job["id"]
     inp    = job["input"]
@@ -250,6 +239,11 @@ def handler(job: dict) -> dict:
     log(f"  Hallo Job : {job_id}")
     log(f"  Keys      : {list(inp.keys())}")
     log(f"{'═'*60}\n")
+
+    # Clear any leftover output from previous job
+    cache_out = Path("/app/.cache/output.mp4")
+    if cache_out.exists():
+        cache_out.unlink()
 
     with tempfile.TemporaryDirectory(prefix=f"hallo_{job_id}_") as _tmp:
         tmp = Path(_tmp)
@@ -302,7 +296,7 @@ def handler(job: dict) -> dict:
                 cmd, cwd="/app",
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
-                env={**os.environ, "PYTHONUNBUFFERED": "1", "IMAGEIO_FFMPEG_EXE": "/usr/bin/ffmpeg"},
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
             start = time.time()
             lines = []
@@ -320,64 +314,36 @@ def handler(job: dict) -> dict:
 
         log(f"\n  Return code: {return_code}")
 
-        # Try to locate the output video file
-        video_path = find_output_video(OUTPUT_DIR, job_id)
+        # Hallo writes to .cache/output.mp4 — find it regardless of return code
+        video_path = find_output_video(job_id)
 
-        # ── MoviePy Broken Pipe Recovery Workaround ─────────────────
-        # If the script failed or the video wasn't found, check if cached frames exist to stitch manually
-        if not video_path or return_code != 0:
-            log("  ⚠️  MoviePy step hit a pipe truncation. Checking fallback cache for frame assembly...")
-            
-            # Formulate possible location where hallo dumped frame files
-            cache_folder = Path(OUTPUT_DIR) / f"{job_id}.mp4"
-            
-            if cache_folder.exists() and any(cache_folder.glob("frame_*.png")):
-                log(f"  ⚙  Found generated image frames inside cache: {cache_folder}")
-                manual_output = Path(OUTPUT_DIR) / f"{job_id}_fixed.mp4"
-                
-                # Manual compilation query using system's local optimized ffmpeg binary
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-framerate", "25",
-                    "-i", f"{cache_folder}/frame_%04d.png",
-                    "-i", audio_path,
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-shortest", str(manual_output)
-                ]
-                
-                log(f"  🚀 Launching Manual FFmpeg: {' '.join(ffmpeg_cmd)}")
-                assemble_res = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-                
-                if manual_output.exists() and manual_output.stat().st_size > 0:
-                    video_path = str(manual_output)
-                    log("  ✓ Manual conversion compilation successful!")
-                else:
-                    log(f"  ✗ Manual assembly failed. FFmpeg stderr:\n{assemble_res.stderr}")
-
-        if not video_path:
+        if return_code != 0 and not video_path:
             return {
-                "error":  "Output video file not found, frame recovery unsuccessful.",
+                "error":      "Inference failed",
                 "returncode": return_code,
-                "output":     "\n".join(lines[-40:]),
+                "output":     "\n".join(lines[-60:]),
                 "job_id":     job_id,
             }
 
-        log(f"  ✓ Found target file: {video_path}")
+        if not video_path:
+            return {
+                "error":  "Output video not found",
+                "job_id": job_id,
+                "cache":  [str(p) for p in Path("/app/.cache").iterdir()],
+                "outdir": [str(p) for p in Path(OUTPUT_DIR).iterdir()],
+            }
+
+        log(f"  ✓ Output: {video_path}")
         mb = os.path.getsize(video_path) / 1e6
-        log(f"  ⚙  Encoding {mb:.1f} MB to base64 string…")
+        log(f"  ⚙  Encoding {mb:.1f} MB…")
 
         try:
             with open(video_path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
             try:
                 os.remove(video_path)
-                # Cleanup cache folder layout if it exists
-                cache_folder = Path(OUTPUT_DIR) / f"{job_id}.mp4"
-                if cache_folder.is_dir():
-                    import shutil
-                    shutil.rmtree(cache_folder)
             except Exception:
                 pass
-                
             return {
                 "status":         "success",
                 "job_id":         job_id,
