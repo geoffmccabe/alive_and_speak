@@ -195,6 +195,36 @@ def find_output_video(job_id: str) -> Union[str, None]:
     return None
 
 
+
+def denoise_video(input_path: str, output_path: str) -> str:
+    """
+    Apply ffmpeg hqdn3d denoising filter to remove diffusion noise dots.
+    hqdn3d=4:3:6:4.5 — strong enough to kill pixel noise, keeps face detail.
+    Falls back to original if ffmpeg fails.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", input_path,
+                "-vf", "hqdn3d=4:3:6:4.5",
+                "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                "-c:a", "copy",
+                output_path,
+            ],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0 and Path(output_path).stat().st_size > 0:
+            log(f"  ✓  Denoised → {output_path}")
+            return output_path
+        else:
+            log(f"  ⚠  ffmpeg denoise failed: {result.stderr[-200:]}")
+            return input_path
+    except Exception as e:
+        log(f"  ⚠  Denoise error: {e}")
+        return input_path
+
+
 def write_job_config(image_path, audio_path,
                      pose_weight, face_weight, lip_weight,
                      face_expand_ratio, steps, tmp_dir) -> str:
@@ -356,6 +386,11 @@ def handler(job: dict) -> dict:
             }
 
         log(f"  ✓ Output: {video_path}")
+
+        # ── Denoise ──────────────────────────────────────────
+        denoised_path = str(Path(str(video_path)).parent / f"{job_id}_denoised.mp4")
+        video_path = denoise_video(video_path, denoised_path)
+
         mb = os.path.getsize(video_path) / 1e6
         log(f"  ⚙  Encoding {mb:.1f} MB…")
 
