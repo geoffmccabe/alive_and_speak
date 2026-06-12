@@ -76,8 +76,8 @@ RUN pip install "runpod==1.6.2" requests
 RUN mkdir -p /tmp/hallo3_outputs /workspace/weights/hallo3
 
 # ── 11. Application files ─────────────────────────────────────────
-COPY handler_hallo3.py  /app/handler.py
-COPY start_hallo3.sh    /start.sh
+COPY handler.py /app/handler.py
+COPY start.sh /start.sh
 
 RUN chmod +x /start.sh
 CMD ["/start.sh"]
