@@ -1,13 +1,14 @@
 # ═══════════════════════════════════════════════════════════════════
 #  Hallo3 – RunPod Serverless Image
 #  https://github.com/fudan-generative-vision/hallo3
-#  CVPR 2025 — CogVideoX-5B DiT backbone (no SD1.5, no noise artifacts
+#  CVPR 2025 — CogVideoX-5B DiT backbone
 # ═══════════════════════════════════════════════════════════════════
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app
 
 # ── 1. System packages ────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,7 +28,7 @@ RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 1
 WORKDIR /app
 RUN git clone --depth 1 https://github.com/fudan-generative-vision/hallo3.git /app
 
-# ── 4. PyTorch (must match requirements: torch==2.4.0 + cu121) ───
+# ── 4. PyTorch 2.4.0 + cu121 ─────────────────────────────────────
 RUN pip install \
         torch==2.4.0 \
         torchvision==0.19.0 \
@@ -63,21 +64,18 @@ RUN pip install \
         "audio-separator==0.21.2" \
         "decord==0.6.0"
 
-# ── 7. Install Hallo3 as package ──────────────────────────────────
-RUN pip install -e /app --no-deps
-
-# ── 8. Install all requirements ───────────────────────────────────
+# ── 7. Install requirements (no editable install — Hallo3 has no setup.py)
 RUN pip install -r /app/requirements.txt
 
-# ── 9. RunPod + requests ──────────────────────────────────────────
+# ── 8. RunPod + requests ──────────────────────────────────────────
 RUN pip install "runpod==1.6.2" requests
 
-# ── 10. Directories ───────────────────────────────────────────────
+# ── 9. Directories ────────────────────────────────────────────────
 RUN mkdir -p /tmp/hallo3_outputs /workspace/weights/hallo3
 
-# ── 11. Application files ─────────────────────────────────────────
+# ── 10. Application files ─────────────────────────────────────────
 COPY handler.py /app/handler.py
-COPY start.sh /start.sh
+COPY start.sh   /start.sh
 
 RUN chmod +x /start.sh
 CMD ["/start.sh"]
