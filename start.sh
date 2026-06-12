@@ -2,39 +2,35 @@
 set -euo pipefail
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║  Hallo – RunPod Serverless Worker                        ║"
+echo "║  Hallo3 – RunPod Serverless Worker                       ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 
-HALLO_WEIGHTS="${HALLO_WEIGHTS:-/runpod-volume/weights/hallo}"
-echo "  HALLO_WEIGHTS : ${HALLO_WEIGHTS}"
+HALLO3_WEIGHTS="${HALLO3_WEIGHTS:-/workspace/weights/hallo3/pretrained_models}"
+echo "  HALLO3_WEIGHTS : ${HALLO3_WEIGHTS}"
 echo ""
 
-# /app/pretrained_models → volume (relative paths in default.yaml)
+# /app/pretrained_models → weights volume (Hallo3 uses relative paths)
 if [[ ! -L "/app/pretrained_models" ]]; then
     [[ -d "/app/pretrained_models" ]] && mv /app/pretrained_models /app/pretrained_models.bak
-    ln -sf "${HALLO_WEIGHTS}" /app/pretrained_models
-    echo "  ✓ Linked /app/pretrained_models → ${HALLO_WEIGHTS}"
+    ln -sf "${HALLO3_WEIGHTS}" /app/pretrained_models
+    echo "  ✓ Linked /app/pretrained_models → ${HALLO3_WEIGHTS}"
 else
-    echo "  ✓ /app/pretrained_models already linked"
+    echo "  ✓ /app/pretrained_models linked"
 fi
-
-# .cache dir — Hallo's tensor_to_video hardcodes ".cache/output.mp4" relative to cwd=/app
-mkdir -p /app/.cache
-echo "  ✓ /app/.cache ready"
 
 echo ""
 echo "  Checking model files:"
 for f in \
-    "hallo/net.pth" \
-    "motion_module/mm_sd_v15_v2.ckpt" \
-    "sd-vae-ft-mse/config.json" \
-    "stable-diffusion-v1-5/unet/config.json" \
-    "face_analysis/models/det_10g.onnx" \
-    "face_analysis/models/buffalo_l/det_10g.onnx" \
+    "hallo3/1/mp_rank_00_model_states.pt" \
+    "hallo3/latest" \
+    "cogvideox-5b-i2v-sat/transformer/1/mp_rank_00_model_states.pt" \
+    "cogvideox-5b-i2v-sat/vae/3d-vae.pt" \
+    "t5-v1_1-xxl/config.json" \
     "wav2vec/wav2vec2-base-960h/config.json" \
-    "audio_separator/Kim_Vocal_2.onnx"
+    "audio_separator/Kim_Vocal_2.onnx" \
+    "face_analysis/models/scrfd_10g_bnkps.onnx"
 do
-    full="${HALLO_WEIGHTS}/${f}"
+    full="${HALLO3_WEIGHTS}/${f}"
     if [[ -f "${full}" || -L "${full}" ]]; then
         echo "    ✓  ${f}"
     else
