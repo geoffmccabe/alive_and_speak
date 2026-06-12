@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #  Hallo3 – RunPod Serverless Image
 #  https://github.com/fudan-generative-vision/hallo3
-#  CVPR 2025 — CogVideoX-5B DiT backbone (no SD1.5, no noise artifacts)
+#  CVPR 2025 — CogVideoX-5B DiT backbone (no SD1.5, no noise artifacts
 # ═══════════════════════════════════════════════════════════════════
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
