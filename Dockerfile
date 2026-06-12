@@ -28,14 +28,18 @@ RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 1
 WORKDIR /app
 RUN git clone --depth 1 https://github.com/fudan-generative-vision/hallo3.git /app
 
-# ── 4. PyTorch 2.4.0 + cu121 ─────────────────────────────────────
+# ── 4. Patch requirements.txt ─────────────────────────────────────
+# pyav==14.0.1 requires Python>=3.11 — replace with 3.10-compatible version
+RUN sed -i 's/^pyav==14\.0\.1/pyav==12.3.0/g' /app/requirements.txt
+
+# ── 5. PyTorch 2.4.0 + cu121 ─────────────────────────────────────
 RUN pip install \
         torch==2.4.0 \
         torchvision==0.19.0 \
         torchaudio==2.4.0 \
         --index-url https://download.pytorch.org/whl/cu121
 
-# ── 5. Core deps ──────────────────────────────────────────────────
+# ── 6. Core deps ──────────────────────────────────────────────────
 RUN pip install \
         "numpy==1.26.4" \
         "deepspeed==0.14.4" \
@@ -49,7 +53,7 @@ RUN pip install \
         "sentencepiece==0.2.0" \
         "tokenizers==0.20.1"
 
-# ── 6. Media / face analysis deps ────────────────────────────────
+# ── 7. Media / face analysis deps ────────────────────────────────
 RUN pip install \
         "insightface==0.7.3" \
         "onnxruntime-gpu==1.19.2" \
@@ -62,18 +66,19 @@ RUN pip install \
         "decorator>=4.0.2" \
         "librosa==0.10.2.post1" \
         "audio-separator==0.21.2" \
-        "decord==0.6.0"
+        "decord==0.6.0" \
+        "pyav==12.3.0"
 
-# ── 7. Install requirements (no editable install — Hallo3 has no setup.py)
+# ── 8. Install requirements.txt (pyav already patched above) ──────
 RUN pip install -r /app/requirements.txt
 
-# ── 8. RunPod + requests ──────────────────────────────────────────
+# ── 9. RunPod + requests ──────────────────────────────────────────
 RUN pip install "runpod==1.6.2" requests
 
-# ── 9. Directories ────────────────────────────────────────────────
-RUN mkdir -p /tmp/hallo3_outputs /workspace/weights/hallo3
+# ── 10. Directories ───────────────────────────────────────────────
+RUN mkdir -p /tmp/hallo3_outputs /workspace/weights/hallo
 
-# ── 10. Application files ─────────────────────────────────────────
+# ── 11. Application files ─────────────────────────────────────────
 COPY handler.py /app/handler.py
 COPY start.sh   /start.sh
 
