@@ -9,7 +9,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app
-
 # ── 1. System packages ────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common wget git curl ca-certificates ffmpeg \
