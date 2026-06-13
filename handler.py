@@ -33,7 +33,7 @@ from typing import Union
 
 import runpod
 
-HALLO3_WEIGHTS     = os.environ.get("HALLO3_WEIGHTS",  "/workspace/weights/hallo3/pretrained_models")
+HALLO3_WEIGHTS     = os.environ.get("HALLO3_WEIGHTS",  "/runpod-volume/weights/hallo3/pretrained_models")
 OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",       "/tmp/hallo3_outputs")
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "9000000"))  # 15 min
 
