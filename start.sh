@@ -5,7 +5,7 @@ echo "╔═══════════════════════�
 echo "║  Hallo3 – RunPod Serverless Worker                       ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 
-HALLO3_WEIGHTS="${HALLO3_WEIGHTS:-/workspace/weights/hallo3/pretrained_models}"
+HALLO3_WEIGHTS="${HALLO3_WEIGHTS:-/runpod-volume/weights/hallo3/pretrained_models}"
 echo "  HALLO3_WEIGHTS : ${HALLO3_WEIGHTS}"
 echo ""
 
