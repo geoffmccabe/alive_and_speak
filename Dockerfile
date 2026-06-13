@@ -9,6 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app
+
 # ── 1. System packages ────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common wget git curl ca-certificates ffmpeg \
@@ -27,18 +28,14 @@ RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 1
 WORKDIR /app
 RUN git clone --depth 1 https://github.com/fudan-generative-vision/hallo3.git /app
 
-# ── 4. Patch requirements.txt ─────────────────────────────────────
-# pyav==14.0.1 requires Python>=3.11 — replace with 3.10-compatible version
-RUN sed -i 's/^pyav==14\.0\.1/pyav==12.3.0/g' /app/requirements.txt
-
-# ── 5. PyTorch 2.4.0 + cu121 ─────────────────────────────────────
+# ── 4. PyTorch 2.4.0 + cu121 ─────────────────────────────────────
 RUN pip install \
         torch==2.4.0 \
         torchvision==0.19.0 \
         torchaudio==2.4.0 \
         --index-url https://download.pytorch.org/whl/cu121
 
-# ── 6. Core deps ──────────────────────────────────────────────────
+# ── 5. Core deps ──────────────────────────────────────────────────
 RUN pip install \
         "numpy==1.26.4" \
         "deepspeed==0.14.4" \
@@ -52,7 +49,7 @@ RUN pip install \
         "sentencepiece==0.2.0" \
         "tokenizers==0.20.1"
 
-# ── 7. Media / face analysis deps ────────────────────────────────
+# ── 6. Media / face analysis deps ────────────────────────────────
 RUN pip install \
         "insightface==0.7.3" \
         "onnxruntime-gpu==1.19.2" \
@@ -68,16 +65,18 @@ RUN pip install \
         "decord==0.6.0" \
         "pyav==12.3.0"
 
-# ── 8. Install requirements.txt (pyav already patched above) ──────
-RUN pip install -r /app/requirements.txt
+# ── 7. Patch + install requirements.txt in ONE layer ─────────────
+# pyav==14.0.1 requires Python>=3.11 — must patch before pip reads it
+RUN sed -i 's/pyav==14\.0\.1/pyav==12.3.0/g' /app/requirements.txt && \
+    pip install -r /app/requirements.txt
 
-# ── 9. RunPod + requests ──────────────────────────────────────────
+# ── 8. RunPod + requests ──────────────────────────────────────────
 RUN pip install "runpod==1.6.2" requests
 
-# ── 10. Directories ───────────────────────────────────────────────
+# ── 9. Directories ────────────────────────────────────────────────
 RUN mkdir -p /tmp/hallo3_outputs /workspace/weights/hallo
 
-# ── 11. Application files ─────────────────────────────────────────
+# ── 10. Application files ─────────────────────────────────────────
 COPY handler.py /app/handler.py
 COPY start.sh   /start.sh
 
