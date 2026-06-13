@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app
 
-# System packages
+# System
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common wget git curl ca-certificates ffmpeg \
         libgl1-mesa-glx libglib2.0-0 libsndfile1 \
