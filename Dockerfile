@@ -1,8 +1,4 @@
-# ═══════════════════════════════════════════════════════════════════
-#  Hallo3 – RunPod Serverless Image
-#  https://github.com/fudan-generative-vision/hallo3
-#  CVPR 2025 — CogVideoX-5B DiT backbone
-# ═══════════════════════════════════════════════════════════════════
+
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
