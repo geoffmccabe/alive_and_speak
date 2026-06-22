@@ -1,6 +1,5 @@
 """
 Downloads all FLOAT model files into /app/checkpoints/ during Docker build.
-Run as: python download_models.py
 """
 import os
 import sys
@@ -9,59 +8,46 @@ from huggingface_hub import hf_hub_download
 CKPTS = "/app/checkpoints"
 os.makedirs(CKPTS, exist_ok=True)
 
-# ── 1. wav2vec2-base-960h (audio encoder) ────────────────────────
-print("\n── Downloading facebook/wav2vec2-base-960h ──")
-wav2vec_files = [
+errors = []
+
+def download(repo, filename, dest_dir):
+    dest = os.path.join(CKPTS, dest_dir)
+    os.makedirs(dest, exist_ok=True)
+    try:
+        hf_hub_download(repo_id=repo, filename=filename, local_dir=dest)
+        mb = os.path.getsize(os.path.join(dest, filename)) / 1_000_000
+        print(f"  ✓  {dest_dir}/{filename}  ({mb:.1f} MB)")
+    except Exception as e:
+        print(f"  ✗  {dest_dir}/{filename}: {e}")
+        errors.append(f"{dest_dir}/{filename}")
+
+# ── 1. wav2vec2-base-960h ─────────────────────────────────────────
+print("\n── facebook/wav2vec2-base-960h ──")
+for f in [
     "config.json",
-    "model.safetensors",
+    "pytorch_model.bin",          # correct filename (NOT model.safetensors)
     "preprocessor_config.json",
     "tokenizer_config.json",
     "vocab.json",
     "special_tokens_map.json",
-]
-dest = os.path.join(CKPTS, "wav2vec2-base-960h")
-os.makedirs(dest, exist_ok=True)
-for f in wav2vec_files:
-    try:
-        hf_hub_download(
-            repo_id="facebook/wav2vec2-base-960h",
-            filename=f,
-            local_dir=dest,
-        )
-        mb = os.path.getsize(os.path.join(dest, f)) / 1_000_000
-        print(f"  ✓  {f}  ({mb:.1f} MB)")
-    except Exception as e:
-        print(f"  ✗  {f}: {e}")
-        sys.exit(1)
+]:
+    download("facebook/wav2vec2-base-960h", f, "wav2vec2-base-960h")
 
-# ── 2. wav2vec-english-speech-emotion-recognition ────────────────
-print("\n── Downloading r-f/wav2vec-english-speech-emotion-recognition ──")
-emotion_files = [
+# ── 2. wav2vec emotion recognition ───────────────────────────────
+print("\n── r-f/wav2vec-english-speech-emotion-recognition ──")
+for f in [
     "config.json",
     "pytorch_model.bin",
     "preprocessor_config.json",
-]
-dest = os.path.join(CKPTS, "wav2vec-english-speech-emotion-recognition")
-os.makedirs(dest, exist_ok=True)
-for f in emotion_files:
-    try:
-        hf_hub_download(
-            repo_id="r-f/wav2vec-english-speech-emotion-recognition",
-            filename=f,
-            local_dir=dest,
-        )
-        mb = os.path.getsize(os.path.join(dest, f)) / 1_000_000
-        print(f"  ✓  {f}  ({mb:.1f} MB)")
-    except Exception as e:
-        print(f"  ✗  {f}: {e}")
-        sys.exit(1)
+]:
+    download("r-f/wav2vec-english-speech-emotion-recognition", f,
+             "wav2vec-english-speech-emotion-recognition")
 
-# ── 3. Verify all required files ─────────────────────────────────
-print("\n── Verifying all model files ──")
+# ── Verify ────────────────────────────────────────────────────────
+print("\n── Verification ──")
 required = [
-    "float.pth",
     "wav2vec2-base-960h/config.json",
-    "wav2vec2-base-960h/model.safetensors",
+    "wav2vec2-base-960h/pytorch_model.bin",
     "wav2vec2-base-960h/preprocessor_config.json",
     "wav2vec2-base-960h/tokenizer_config.json",
     "wav2vec2-base-960h/vocab.json",
@@ -70,7 +56,6 @@ required = [
     "wav2vec-english-speech-emotion-recognition/pytorch_model.bin",
     "wav2vec-english-speech-emotion-recognition/preprocessor_config.json",
 ]
-missing = []
 for f in required:
     path = os.path.join(CKPTS, f)
     if os.path.exists(path):
@@ -78,10 +63,10 @@ for f in required:
         print(f"  ✓  {f}  ({mb:.1f} MB)")
     else:
         print(f"  ✗  MISSING: {f}")
-        missing.append(f)
+        errors.append(f)
 
-if missing:
-    print(f"\nBUILD FAILED: {len(missing)} file(s) missing: {missing}")
+if errors:
+    print(f"\nBUILD FAILED — {len(errors)} missing: {errors}")
     sys.exit(1)
 
-print("\nAll model files present — download complete.")
+print("\nAll HuggingFace models downloaded successfully.")
