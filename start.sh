@@ -45,7 +45,7 @@ check "float.pth"
 
 # wav2vec2 audio encoder — both weight formats required
 check "wav2vec2-base-960h/config.json"
-check "wav2vec2-base-960h/model.safetensors"
+check "wav2vec2-base-960h/pytorch_model.bin"
 check "wav2vec2-base-960h/preprocessor_config.json"
 check "wav2vec2-base-960h/tokenizer_config.json"
 check "wav2vec2-base-960h/vocab.json"
