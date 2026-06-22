@@ -1,286 +1,393 @@
 """
-RunPod Serverless Handler – Hallo3 (Hardened)
-https://github.com/fudan-generative-vision/hallo3
-CVPR 2025 — CogVideoX-5B DiT backbone
+RunPod Serverless Handler – FLOAT + edge-tts
+https://github.com/deepbrainai-research/float
+
+Two input modes:
+  A) Text → edge-tts → audio → FLOAT → video
+  B) Audio URL → FLOAT → video
+
+Top 20 English voices for "voice" parameter:
+  US Male   : en-US-GuyNeural, en-US-ChristopherNeural, en-US-EricNeural,
+               en-US-RogerNeural, en-US-SteffanNeural, en-US-AndrewNeural
+  US Female : en-US-AriaNeural, en-US-JennyNeural, en-US-MichelleNeural,
+               en-US-AvaNeural, en-US-EmmaNeural
+  GB Male   : en-GB-RyanNeural, en-GB-ThomasNeural
+  GB Female : en-GB-SoniaNeural, en-GB-LibbyNeural
+  Other     : en-AU-WilliamMultilingualNeural, en-CA-LiamNeural,
+               en-IN-PrabhatNeural, en-ZA-LukeNeural, en-IE-ConnorNeural
+
+Input schema:
+{
+  "input": {
+    "image_url":   "https://...",          # REQUIRED
+    
+    # ── Option A: Text-to-Speech ──────────────────────────────
+    "text":        "Hello, how are you?",  # if set, edge-tts is used
+    "voice":       "en-US-GuyNeural",      # default: en-US-GuyNeural
+    
+    # ── Option B: Direct audio ────────────────────────────────
+    "audio_url":   "https://.../audio.wav",
+    
+    # ── FLOAT params ──────────────────────────────────────────
+    "emotion":     null,                   # angry|disgust|fear|happy|neutral|sad|surprise
+    "no_crop":     false,
+    "a_cfg_scale": 2.0,
+    "e_cfg_scale": 1.0,
+    "r_cfg_scale": 1.0,
+    "nfe":         10,
+    "seed":        25
+  }
+}
 """
 
 import os
 import sys
 import time
 import base64
-import requests
-import tempfile
-import subprocess
 import asyncio
-import shutil
+import subprocess
+import tempfile
+import requests
 from pathlib import Path
-from typing import Union
 
 import runpod
 
-HALLO3_WEIGHTS     = os.environ.get("HALLO3_WEIGHTS",  "/runpod-volume/weights/hallo3/pretrained_models")
-OUTPUT_DIR         = os.environ.get("OUTPUT_DIR",       "/tmp/hallo3_outputs")
-GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "90000000"))  # 15 min
+# ─────────────────────────────────────────────────────────────────
+#  Available voices reference
+# ─────────────────────────────────────────────────────────────────
+VOICES = {
+    # US Male
+    "en-US-GuyNeural":         "US Male – neutral, authoritative",
+    "en-US-ChristopherNeural": "US Male – warm, conversational",
+    "en-US-EricNeural":        "US Male – clear, professional",
+    "en-US-RogerNeural":       "US Male – energetic",
+    "en-US-SteffanNeural":     "US Male – deep, newscast",
+    "en-US-AndrewNeural":      "US Male – friendly",
+    # US Female
+    "en-US-AriaNeural":        "US Female – lively, expressive",
+    "en-US-JennyNeural":       "US Female – warm, assistant-style",
+    "en-US-MichelleNeural":    "US Female – friendly, positive",
+    "en-US-AvaNeural":         "US Female – gentle, soothing",
+    "en-US-EmmaNeural":        "US Female – confident",
+    # GB
+    "en-GB-RyanNeural":        "British Male – crisp, formal",
+    "en-GB-ThomasNeural":      "British Male – authoritative",
+    "en-GB-SoniaNeural":       "British Female – natural, warm",
+    "en-GB-LibbyNeural":       "British Female – clear",
+    # Other accents
+    "en-AU-WilliamMultilingualNeural": "Australian Male – relaxed",
+    "en-CA-LiamNeural":        "Canadian Male – friendly",
+    "en-IN-PrabhatNeural":     "Indian Male – distinct accent",
+    "en-ZA-LukeNeural":        "South African Male – unique",
+    "en-IE-ConnorNeural":      "Irish Male – warm brogue",
+}
 
-os.environ["HF_HOME"]            = HALLO3_WEIGHTS
-os.environ["TRANSFORMERS_CACHE"] = HALLO3_WEIGHTS
+DEFAULT_VOICE = "en-US-GuyNeural"
+
+# ─────────────────────────────────────────────────────────────────
+#  Config
+# ─────────────────────────────────────────────────────────────────
+CKPT_PATH  = os.environ.get("CKPT_PATH",  "/app/checkpoints/float.pth")
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/tmp/float_outputs")
+GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "300"))
+
+SIGNED_UPLOAD_ENDPOINT: str = os.environ.get(
+    "SIGNED_UPLOAD_ENDPOINT",
+    "https://kabdqrzcewkzbjmeqmxx.supabase.co/functions/v1/runpod-signed-upload",
+)
+RUNPOD_UPLOAD_SECRET: str = os.environ.get(
+    "RUNPOD_UPLOAD_SECRET",
+    "67mN2pQ9xR4vT8wY3zA5bC6dE1fG0hJ4kL8nM2oP6qS9t",
+)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
+# ─────────────────────────────────────────────────────────────────
+#  TTS
+# ─────────────────────────────────────────────────────────────────
+def text_to_wav(text: str, voice: str, wav_path: str) -> str:
+    """Generate WAV from text using edge-tts. Returns wav_path."""
+    import edge_tts
+
+    if voice not in VOICES:
+        raise ValueError(
+            f"Unknown voice '{voice}'. Choose from: {list(VOICES.keys())}"
+        )
+
+    mp3_path = wav_path.replace(".wav", ".mp3")
+
+    async def _generate():
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(mp3_path)
+
+    asyncio.run(_generate())
+
+    # Convert MP3 → WAV 16kHz mono (required by wav2vec2 inside FLOAT)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", mp3_path,
+         "-ar", "16000", "-ac", "1", wav_path],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    os.remove(mp3_path)
+    return wav_path
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Helpers
+# ─────────────────────────────────────────────────────────────────
 def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def _dl(url: str, dest: str, timeout: int = 180) -> bool:
-    try:
-        log(f"  ⬇  {url}")
-        r = requests.get(url, stream=True, timeout=timeout)
-        r.raise_for_status()
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        with open(dest, "wb") as fh:
-            for chunk in r.iter_content(chunk_size=65_536):
-                fh.write(chunk)
-        log(f"     ✓ {os.path.getsize(dest)/1e6:.1f} MB")
-        return True
-    except Exception as e:
-        log(f"     ✗ {e}")
-        return False
+def download_file(url: str, dest: str, timeout: int = 120) -> str:
+    log(f"  ⬇  {url}")
+    r = requests.get(url, stream=True, timeout=timeout)
+    r.raise_for_status()
+    with open(dest, "wb") as fh:
+        for chunk in r.iter_content(chunk_size=65_536):
+            fh.write(chunk)
+    mb = os.path.getsize(dest) / 1_000_000
+    log(f"     ✓ {mb:.1f} MB")
+    return dest
 
 
-def ensure_models_ready() -> None:
-    weights     = Path(HALLO3_WEIGHTS)
-    models_dir  = weights / "face_analysis" / "models"
-    models_dir.mkdir(parents=True, exist_ok=True)
+def upload_video(video_path: str, job_id: str) -> dict:
+    mb       = os.path.getsize(video_path) / 1_000_000
+    filename = f"{job_id}.mp4"
+    log(f"  ⬆  Uploading {filename} ({mb:.1f} MB)")
 
-    # InsightFace onnx files — Hallo3 uses scrfd not buffalo_l
-    onnx_files = {
-        "scrfd_10g_bnkps.onnx": "https://huggingface.co/deepinsight/insightface/resolve/main/models/scrfd_10g_bnkps.onnx",
-        "1k3d68.onnx":          "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/1k3d68.onnx",
-        "2d106det.onnx":        "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/2d106det.onnx",
-        "genderage.onnx":       "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/genderage.onnx",
-        "glintr100.onnx":       "https://huggingface.co/deepinsight/insightface/resolve/main/models/glintr100.onnx",
-    }
-    for fname, url in onnx_files.items():
-        fpath = models_dir / fname
-        if not fpath.exists() or fpath.stat().st_size < 1000:
-            log(f"  ⚠  Downloading {fname}…")
-            _dl(url, str(fpath))
-
-    landmarker = models_dir / "face_landmarker_v2_with_blendshapes.task"
-    if not landmarker.exists():
-        _dl("https://huggingface.co/fudan-generative-ai/hallo2/resolve/main/face_analysis/models/face_landmarker_v2_with_blendshapes.task",
-            str(landmarker))
-
-    wav2vec_dir = weights / "wav2vec" / "wav2vec2-base-960h"
-    pt  = wav2vec_dir / "pytorch_model.bin"
-    sft = wav2vec_dir / "model.safetensors"
-    if sft.exists() and not pt.exists():
+    last_error = ""
+    for attempt in range(1, 4):
+        log(f"     Attempt {attempt}/3 …")
         try:
-            from safetensors.torch import load_file
-            import torch
-            torch.save(load_file(str(sft)), str(pt))
-            log("  ✓  wav2vec converted")
+            with open(video_path, "rb") as fh:
+                resp = requests.post(
+                    SIGNED_UPLOAD_ENDPOINT,
+                    headers={
+                        "Authorization": f"Bearer {RUNPOD_UPLOAD_SECRET}",
+                        "Content-Type":  "video/mp4",
+                        "X-Job-Id":      job_id,
+                        "X-Filename":    filename,
+                    },
+                    data=fh,
+                    timeout=300,
+                )
+            log(f"     HTTP {resp.status_code}")
+            if resp.ok:
+                payload   = resp.json()
+                video_url = (payload.get("url") or payload.get("publicUrl")
+                             or payload.get("signedUrl") or "")
+                log(f"     ✓ {video_url}")
+                return {"video_url": video_url, "upload_response": payload,
+                        "upload_method": "supabase"}
+            last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+        except requests.exceptions.Timeout:
+            last_error = f"Attempt {attempt} timed out"
         except Exception as e:
-            log(f"  ⚠  wav2vec conversion failed: {e}")
+            last_error = str(e)
+        log(f"     ✗ {last_error}")
+        if attempt < 3:
+            time.sleep(2 ** attempt)
 
-    app_pre = Path("/app/pretrained_models")
-    if not app_pre.is_symlink():
-        if app_pre.exists():
-            app_pre.rename("/app/pretrained_models.bak")
-        app_pre.symlink_to(weights.resolve())
-
-
-log("⏳ Model readiness check…")
-ensure_models_ready()
-
-
-def prepare_hallo3_image(src: str, dst: str) -> str:
-    """
-    Saves native square assets conforming to native DiT spatial dimensions.
-    """
-    try:
-        from PIL import Image
-        img = Image.open(src).convert("RGB")
-        w, h = img.size
-        log(f"  📐 Original Input Image: {w}×{h}")
-        
-        # Crop to square 1:1 format safely
-        if w != h:
-            s = min(w, h)
-            img = img.crop(((w-s)//2, (h-s)//2, (w+s)//2, (h+s)//2))
-            
-        # Target high res conditioning blocks natively matched with 3D-VAE dimensions
-        img = img.resize((720, 720), Image.LANCZOS)
-        img.save(dst, "JPEG", quality=98)
-        log(f"  ✓  Prepared square image scaled to 720x720")
-        return dst
-    except Exception as e:
-        log(f"  ⚠  Dimension formatting skipped: {e}")
-        return src
+    log("  ⚠  All uploads failed — encoding as base64 fallback")
+    with open(video_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    return {
+        "video_url":      "",
+        "video_base64":   b64,
+        "video_filename": filename,
+        "upload_method":  "base64_fallback",
+        "upload_error":   last_error,
+        "note":           "Decode video_base64 to recover the mp4.",
+    }
 
 
-def find_output_video(output_dir: str) -> Union[str, None]:
-    base = Path(output_dir)
-    # Check explicitly for structural output patterns created via sample_video.py
-    for p in sorted(base.rglob("*_with_audio.mp4")):
-        if p.exists() and p.stat().st_size > 0:
-            return str(p)
-    # Generic catch-all fallback inside the explicit execution folder
-    for p in sorted(base.rglob("*.mp4")):
-        if p.exists() and p.stat().st_size > 0:
+def find_output_video(path: str) -> str | None:
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return path
+    stem = Path(path).stem
+    for p in sorted(Path(OUTPUT_DIR).glob(f"{stem}*.mp4")):
+        if p.stat().st_size > 0:
             return str(p)
     return None
 
 
-def denoise_video(input_path: str, output_path: str) -> str:
-    try:
-        # Applying spatial-temporal block filtering to clear potential DiT transition grain
-        result = subprocess.run([
-            "ffmpeg", "-y", "-i", input_path,
-            "-vf", "hqdn3d=4:3:6:4.5",
-            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-            "-c:a", "copy", output_path,
-        ], capture_output=True, text=True)
-        if result.returncode == 0 and Path(output_path).stat().st_size > 0:
-            log(f"  ✓  Denoised successfully.")
-            return output_path
-        return input_path
-    except Exception as e:
-        log(f"  ⚠  Denoise skipped: {e}")
-        return input_path
-
-
+# ─────────────────────────────────────────────────────────────────
+#  Main handler
+# ─────────────────────────────────────────────────────────────────
 def handler(job: dict) -> dict:
     job_id = job["id"]
     inp    = job["input"]
 
-    log(f"\n{'═'*60}\n  Hallo3 Job Process Execution: {job_id}\n{'═'*60}\n")
+    log(f"\n{'═' * 60}")
+    log(f"  Job  : {job_id}")
+    log(f"  Keys : {list(inp.keys())}")
+    log(f"{'═' * 60}\n")
 
-    with tempfile.TemporaryDirectory(prefix=f"hallo3_{job_id}_") as _tmp:
+    with tempfile.TemporaryDirectory(prefix=f"float_{job_id}_") as _tmp:
         tmp = Path(_tmp)
-        job_output_dir = tmp / "output"
-        job_output_dir.mkdir()
 
-        # ── Download image ────────────────────────────────────────
+        # ── 1. Download reference image ───────────────────────────
         image_url = inp.get("image_url")
         if not image_url:
             return {"error": "'image_url' is required", "job_id": job_id}
-        img_ext   = Path(image_url.split("?")[0]).suffix or ".jpg"
-        raw_img   = str(tmp / f"raw{img_ext}")
-        sq_img    = str(tmp / "portrait_processed.jpg")
+
+        img_ext    = Path(image_url.split("?")[0]).suffix or ".jpg"
+        image_path = str(tmp / f"ref{img_ext}")
         try:
-            r = requests.get(image_url, stream=True, timeout=120)
-            r.raise_for_status()
-            with open(raw_img, "wb") as f:
-                for chunk in r.iter_content(65536): f.write(chunk)
-        except Exception as e:
-            return {"error": f"Image download failed: {e}", "job_id": job_id}
-        image_path = prepare_hallo3_image(raw_img, sq_img)
+            download_file(image_url, image_path)
+        except Exception as exc:
+            return {"error": f"Image download failed: {exc}", "job_id": job_id}
 
-        # ── Download audio ────────────────────────────────────────
-        audio_url = inp.get("audio_url")
-        if not audio_url:
-            return {"error": "'audio_url' is required", "job_id": job_id}
-        aud_ext    = Path(audio_url.split("?")[0]).suffix or ".wav"
-        audio_path = str(tmp / f"audio{aud_ext}")
-        try:
-            r = requests.get(audio_url, stream=True, timeout=120)
-            r.raise_for_status()
-            with open(audio_path, "wb") as f:
-                for chunk in r.iter_content(65536): f.write(chunk)
-        except Exception as e:
-            return {"error": f"Audio download failed: {e}", "job_id": job_id}
+        # ── 2. Prepare audio ──────────────────────────────────────
+        audio_path = str(tmp / "audio.wav")
+        text       = inp.get("text", "").strip()
+        audio_url  = inp.get("audio_url") or inp.get("audio_urls")
+        if isinstance(audio_url, list):
+            audio_url = audio_url[0]
 
-        prompt = inp.get("prompt", "A person talking naturally with sharp features.")
+        if text:
+            # Mode A: Text → edge-tts → WAV
+            voice = inp.get("voice", DEFAULT_VOICE)
+            log(f"  🎤 TTS mode")
+            log(f"     Voice : {voice}  ({VOICES.get(voice, 'unknown')})")
+            log(f"     Text  : {text[:80]}{'…' if len(text) > 80 else ''}")
+            try:
+                text_to_wav(text, voice, audio_path)
+                mb = os.path.getsize(audio_path) / 1_000_000
+                log(f"     ✓ Audio generated ({mb:.2f} MB)")
+            except Exception as exc:
+                return {"error": f"TTS failed: {exc}", "job_id": job_id}
 
-        # ── Write input.txt ───────────────────────────────────────
-        input_txt = str(tmp / "input.txt")
-        with open(input_txt, "w") as f:
-            f.write(f"{prompt}@@{image_path}@@{audio_path}\n")
+        elif audio_url:
+            # Mode B: Download audio file
+            log(f"  🎵 Audio URL mode")
+            aud_ext = Path(audio_url.split("?")[0]).suffix or ".wav"
+            raw_audio = str(tmp / f"raw_audio{aud_ext}")
+            try:
+                download_file(audio_url, raw_audio)
+            except Exception as exc:
+                return {"error": f"Audio download failed: {exc}", "job_id": job_id}
 
-        # ── Run inference ─────────────────────────────────────────
-        cmd = [
-            "bash", "/app/scripts/inference_long_batch.sh",
-            input_txt,
-            str(job_output_dir),
+            # Convert to 16kHz mono WAV if needed
+            if aud_ext.lower() != ".wav":
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", raw_audio,
+                     "-ar", "16000", "-ac", "1", audio_path],
+                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            else:
+                import shutil
+                shutil.copy(raw_audio, audio_path)
+        else:
+            return {
+                "error": "Provide either 'text' (TTS) or 'audio_url' (audio file)",
+                "available_voices": VOICES,
+                "job_id": job_id,
+            }
+
+        # ── 3. FLOAT parameters ───────────────────────────────────
+        output_path = str(Path(OUTPUT_DIR) / f"{job_id}.mp4")
+        emotion     = inp.get("emotion")       # None = S2E (auto from audio)
+        no_crop     = bool(inp.get("no_crop",      False))
+        a_cfg_scale = float(inp.get("a_cfg_scale",  2.0))
+        e_cfg_scale = float(inp.get("e_cfg_scale",  1.0))
+        r_cfg_scale = float(inp.get("r_cfg_scale",  1.0))
+        nfe         = int(inp.get("nfe",            10))
+        seed        = int(inp.get("seed",           25))
+
+        log(f"\n  emotion     : {emotion or 'S2E (auto)'}")
+        log(f"  nfe         : {nfe}  (flow steps)")
+        log(f"  a_cfg_scale : {a_cfg_scale}")
+        log(f"  e_cfg_scale : {e_cfg_scale}")
+
+        # ── 4. Build CLI command ──────────────────────────────────
+        cmd: list[str] = [
+            sys.executable,     "/app/generate.py",
+            "--ref_path",       image_path,
+            "--aud_path",       audio_path,
+            "--res_video_path", output_path,
+            "--ckpt_path",      CKPT_PATH,
+            "--a_cfg_scale",    str(a_cfg_scale),
+            "--e_cfg_scale",    str(e_cfg_scale),
+            "--r_cfg_scale",    str(r_cfg_scale),
+            "--nfe",            str(nfe),
+            "--seed",           str(seed),
         ]
-        log(f"  Command: {' '.join(cmd)}\n")
+        if emotion:
+            cmd += ["--emo", emotion]
+        if no_crop:
+            cmd.append("--no_crop")
 
+        log(f"\n  Command:\n  {' '.join(cmd)}\n")
+
+        # ── 5. Run generation ─────────────────────────────────────
+        log("  🚀 Launching FLOAT…\n")
         try:
             proc = subprocess.Popen(
-                cmd, cwd="/app",
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-                env={
-                    **os.environ, 
-                    "PYTHONUNBUFFERED": "1",
-                    "IMAGEIO_FFMPEG_EXE": "/usr/bin/ffmpeg",
-                    # NATIVE ENV ENFORCEMENT FOR DI-TRANSFORMER STABILITY
-                    "TORCH_CUDNN_V8_API_ENABLED": "1",
-                    "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128",
-                    "ACCELERATE_MIXED_PRECISION": "bf16",
-                    "FORCE_DIT_PRECISION": "bfloat16"
-                },
+                cmd,
+                cwd="/app",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
+
             start = time.time()
-            lines = []
+            lines: list[str] = []
             for line in proc.stdout:
                 line = line.rstrip("\r\n")
                 log(line)
                 lines.append(line)
                 if time.time() - start > GENERATION_TIMEOUT:
                     proc.terminate()
-                    proc.wait()
-                    return {"error": f"Timed out after {GENERATION_TIMEOUT}s", "job_id": job_id}
+                    proc.wait(timeout=10)
+                    return {"error": f"Timed out after {GENERATION_TIMEOUT}s",
+                            "job_id": job_id}
+
             return_code = proc.wait()
-        except Exception as e:
-            return {"error": f"Subprocess failed: {e}", "job_id": job_id}
+
+        except Exception as exc:
+            return {"error": f"Subprocess failed: {exc}", "job_id": job_id}
 
         log(f"\n  Return code: {return_code}")
 
-        # Deep search the temporary output dir structure
-        video_path = find_output_video(str(job_output_dir))
-
-        if return_code != 0 and not video_path:
+        if return_code != 0:
             return {
-                "error": "Inference execution failed inside the framework repository script.",
+                "error":      "Video generation failed",
                 "returncode": return_code,
-                "output": "\n".join(lines[-40:]),
-                "job_id": job_id,
+                "output":     "\n".join(lines[-60:]),
+                "job_id":     job_id,
             }
 
+        # ── 6. Find output ────────────────────────────────────────
+        video_path = find_output_video(output_path)
         if not video_path:
             return {
-                "error": "Output video track not located.",
-                "job_id": job_id,
-                "dir_contents": [str(p) for p in job_output_dir.rglob("*")],
-                "tail_logs": "\n".join(lines[-30:])
+                "error":               "Output video not found",
+                "expected_path":       output_path,
+                "output_dir_contents": [str(p) for p in Path(OUTPUT_DIR).iterdir()],
+                "job_id":              job_id,
             }
 
-        log(f"  ✓ Found target file: {video_path}")
+        log(f"  ✓ Output: {video_path}")
 
-        # Post-Processing Denoise Step
-        denoised = str(tmp / f"{job_id}_denoised.mp4")
-        video_path = denoise_video(video_path, denoised)
+        # ── 7. Upload ─────────────────────────────────────────────
+        upload_result = upload_video(video_path, job_id)
 
-        try:
-            with open(video_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-            return {
-                "status": "success",
-                "job_id": job_id,
-                "video_base64": b64,
-                "video_filename": f"{job_id}.mp4",
-            }
-        except Exception as e:
-            return {"error": f"Encoding failed: {e}", "job_id": job_id}
+        if upload_result.get("upload_method") == "supabase":
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass
+
+        status = "success" if upload_result.get("video_url") else "success_base64_fallback"
+        return {"status": status, "job_id": job_id, **upload_result}
 
 
 if __name__ == "__main__":
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
     runpod.serverless.start({"handler": handler})
