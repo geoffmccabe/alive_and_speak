@@ -2,42 +2,69 @@
 set -euo pipefail
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║  Hallo3 – RunPod Serverless Worker                       ║"
+echo "║  FLOAT – RunPod Serverless Worker                        ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 
-HALLO3_WEIGHTS="${HALLO3_WEIGHTS:-/runpod-volume/weights/hallo3/pretrained_models}"
-echo "  HALLO3_WEIGHTS : ${HALLO3_WEIGHTS}"
+FLOAT_WEIGHTS="${FLOAT_WEIGHTS:-/runpod-volume/weights/float}"
+APP_CKPTS="/app/checkpoints"
+
 echo ""
 
-# /app/pretrained_models → weights volume (Hallo3 uses relative paths)
-if [[ ! -L "/app/pretrained_models" ]]; then
-    [[ -d "/app/pretrained_models" ]] && mv /app/pretrained_models /app/pretrained_models.bak
-    ln -sf "${HALLO3_WEIGHTS}" /app/pretrained_models
-    echo "  ✓ Linked /app/pretrained_models → ${HALLO3_WEIGHTS}"
+if [[ -d "${FLOAT_WEIGHTS}" ]]; then
+    echo "  Volume detected — overriding baked-in checkpoints"
+    if [[ -d "${APP_CKPTS}" && ! -L "${APP_CKPTS}" ]]; then
+        mv "${APP_CKPTS}" "${APP_CKPTS}_baked"
+    fi
+    if [[ ! -L "${APP_CKPTS}" ]]; then
+        ln -sf "${FLOAT_WEIGHTS}" "${APP_CKPTS}"
+        echo "  Linked: ${APP_CKPTS} → ${FLOAT_WEIGHTS}"
+    else
+        echo "  Already linked: ${APP_CKPTS}"
+    fi
 else
-    echo "  ✓ /app/pretrained_models linked"
+    echo "  No volume override — using baked-in checkpoints"
 fi
 
 echo ""
 echo "  Checking model files:"
-for f in \
-    "hallo3/1/mp_rank_00_model_states.pt" \
-    "hallo3/latest" \
-    "cogvideox-5b-i2v-sat/transformer/1/mp_rank_00_model_states.pt" \
-    "cogvideox-5b-i2v-sat/vae/3d-vae.pt" \
-    "t5-v1_1-xxl/config.json" \
-    "wav2vec/wav2vec2-base-960h/config.json" \
-    "audio_separator/Kim_Vocal_2.onnx" \
-    "face_analysis/models/scrfd_10g_bnkps.onnx"
-do
-    full="${HALLO3_WEIGHTS}/${f}"
-    if [[ -f "${full}" || -L "${full}" ]]; then
-        echo "    ✓  ${f}"
+
+MISSING=0
+check() {
+    local f="${APP_CKPTS}/$1"
+    if [[ -f "${f}" ]]; then
+        sz=$(du -sh "${f}" | cut -f1)
+        echo "    ✓  $1  (${sz})"
     else
-        echo "    ✗  MISSING: ${f}"
+        echo "    ✗  MISSING: $1"
+        MISSING=$((MISSING + 1))
     fi
-done
+}
+
+# float main model
+check "float.pth"
+
+# wav2vec2 audio encoder — both weight formats required
+check "wav2vec2-base-960h/config.json"
+check "wav2vec2-base-960h/model.safetensors"
+check "wav2vec2-base-960h/preprocessor_config.json"
+check "wav2vec2-base-960h/tokenizer_config.json"
+check "wav2vec2-base-960h/vocab.json"
+check "wav2vec2-base-960h/special_tokens_map.json"
+
+# emotion recognition model
+check "wav2vec-english-speech-emotion-recognition/config.json"
+check "wav2vec-english-speech-emotion-recognition/pytorch_model.bin"
+check "wav2vec-english-speech-emotion-recognition/preprocessor_config.json"
 
 echo ""
-echo "  Starting handler…"
-exec python3 -u /app/handler.py
+if [[ ${MISSING} -gt 0 ]]; then
+    echo "  ⚠  ${MISSING} file(s) missing — worker may fail on first job."
+else
+    echo "  ✓ All model files verified."
+fi
+
+echo ""
+echo "  Starting RunPod handler…"
+echo ""
+
+exec python -u /app/handler.py
