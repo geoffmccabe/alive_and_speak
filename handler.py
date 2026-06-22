@@ -1,6 +1,6 @@
 """
 RunPod Serverless Handler – FLOAT + edge-tts
-Updated for safer async execution and better error reporting.
+Compatible with older Python runtimes (no PEP 604 union syntax).
 
 Two input modes:
   A) Text → edge-tts → audio → FLOAT → video
@@ -17,7 +17,7 @@ import tempfile
 import traceback
 import concurrent.futures
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 import runpod
@@ -77,13 +77,18 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def error_response(job_id: str, stage: str, exc: Exception, extra: dict | None = None) -> dict:
+def error_response(
+    job_id: str,
+    stage: str,
+    exc: Exception,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     tb = traceback.format_exc()
-    payload = {
+    payload: Dict[str, Any] = {
         "error": str(exc),
         "stage": stage,
         "job_id": job_id,
-        "traceback": tb[-4000:],  # keep logs readable
+        "traceback": tb[-4000:],
     }
     if extra:
         payload.update(extra)
@@ -122,7 +127,7 @@ def text_to_wav(text: str, voice: str, wav_path: str) -> str:
     import edge_tts
 
     if voice not in VOICES:
-        raise ValueError(f"Unknown voice '{voice}'. Choose from: {list(VOICES.keys())}")
+        raise ValueError("Unknown voice '%s'. Choose from: %s" % (voice, list(VOICES.keys())))
 
     mp3_path = wav_path.replace(".wav", ".mp3")
 
@@ -147,21 +152,21 @@ def text_to_wav(text: str, voice: str, wav_path: str) -> str:
 #  Helpers
 # ─────────────────────────────────────────────────────────────────
 def download_file(url: str, dest: str, timeout: int = 120) -> str:
-    log(f"  ⬇  {url}")
+    log("  ⬇  %s" % url)
     r = requests.get(url, stream=True, timeout=timeout)
     r.raise_for_status()
     with open(dest, "wb") as fh:
         for chunk in r.iter_content(chunk_size=65_536):
             fh.write(chunk)
     mb = os.path.getsize(dest) / 1_000_000
-    log(f"     ✓ {mb:.1f} MB")
+    log("     ✓ %.1f MB" % mb)
     return dest
 
 
-def upload_video(video_path: str, job_id: str) -> dict:
+def upload_video(video_path: str, job_id: str) -> Dict[str, Any]:
     mb = os.path.getsize(video_path) / 1_000_000
-    filename = f"{job_id}.mp4"
-    log(f"  ⬆  Uploading {filename} ({mb:.1f} MB)")
+    filename = "%s.mp4" % job_id
+    log("  ⬆  Uploading %s (%.1f MB)" % (filename, mb))
 
     if not RUNPOD_UPLOAD_SECRET:
         return {
@@ -173,13 +178,13 @@ def upload_video(video_path: str, job_id: str) -> dict:
 
     last_error = ""
     for attempt in range(1, 4):
-        log(f"     Attempt {attempt}/3 …")
+        log("     Attempt %d/3 …" % attempt)
         try:
             with open(video_path, "rb") as fh:
                 resp = requests.post(
                     SIGNED_UPLOAD_ENDPOINT,
                     headers={
-                        "Authorization": f"Bearer {RUNPOD_UPLOAD_SECRET}",
+                        "Authorization": "Bearer %s" % RUNPOD_UPLOAD_SECRET,
                         "Content-Type": "video/mp4",
                         "X-Job-Id": job_id,
                         "X-Filename": filename,
@@ -187,7 +192,7 @@ def upload_video(video_path: str, job_id: str) -> dict:
                     data=fh,
                     timeout=300,
                 )
-            log(f"     HTTP {resp.status_code}")
+            log("     HTTP %s" % resp.status_code)
             if resp.ok:
                 payload = resp.json()
                 video_url = (
@@ -196,20 +201,20 @@ def upload_video(video_path: str, job_id: str) -> dict:
                     or payload.get("signedUrl")
                     or ""
                 )
-                log(f"     ✓ {video_url}")
+                log("     ✓ %s" % video_url)
                 return {
                     "video_url": video_url,
                     "upload_response": payload,
                     "upload_method": "supabase",
                     "video_filename": filename,
                 }
-            last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            last_error = "HTTP %s: %s" % (resp.status_code, resp.text[:200])
         except requests.exceptions.Timeout:
-            last_error = f"Attempt {attempt} timed out"
+            last_error = "Attempt %d timed out" % attempt
         except Exception as e:
             last_error = str(e)
 
-        log(f"     ✗ {last_error}")
+        log("     ✗ %s" % last_error)
         if attempt < 3:
             time.sleep(2 ** attempt)
 
@@ -230,7 +235,7 @@ def find_output_video(path: str) -> Optional[str]:
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return path
     stem = Path(path).stem
-    for p in sorted(Path(OUTPUT_DIR).glob(f"{stem}*.mp4")):
+    for p in sorted(Path(OUTPUT_DIR).glob("%s*.mp4" % stem)):
         if p.stat().st_size > 0:
             return str(p)
     return None
@@ -239,17 +244,17 @@ def find_output_video(path: str) -> Optional[str]:
 # ─────────────────────────────────────────────────────────────────
 #  Main handler
 # ─────────────────────────────────────────────────────────────────
-def handler(job: dict) -> dict:
+def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     job_id = job.get("id", "unknown")
     inp = job.get("input", {})
 
-    log(f"\n{'═' * 60}")
-    log(f"  Job  : {job_id}")
-    log(f"  Keys : {list(inp.keys())}")
-    log(f"{'═' * 60}\n")
+    log("\n%s" % ("═" * 60))
+    log("  Job  : %s" % job_id)
+    log("  Keys : %s" % list(inp.keys()))
+    log("%s\n" % ("═" * 60))
 
     try:
-        with tempfile.TemporaryDirectory(prefix=f"float_{job_id}_") as _tmp:
+        with tempfile.TemporaryDirectory(prefix="float_%s_" % job_id) as _tmp:
             tmp = Path(_tmp)
 
             # ── 1. Download reference image ──────────────────────
@@ -258,7 +263,7 @@ def handler(job: dict) -> dict:
                 return {"error": "'image_url' is required", "job_id": job_id, "stage": "validate_input"}
 
             img_ext = Path(image_url.split("?")[0]).suffix or ".jpg"
-            image_path = str(tmp / f"ref{img_ext}")
+            image_path = str(tmp / ("ref" + img_ext))
 
             try:
                 download_file(image_url, image_path)
@@ -274,21 +279,21 @@ def handler(job: dict) -> dict:
 
             if text:
                 voice = inp.get("voice", DEFAULT_VOICE)
-                log(f"  🎤 TTS mode")
-                log(f"     Voice : {voice}  ({VOICES.get(voice, 'unknown')})")
-                log(f"     Text  : {text[:80]}{'…' if len(text) > 80 else ''}")
+                log("  🎤 TTS mode")
+                log("     Voice : %s  (%s)" % (voice, VOICES.get(voice, "unknown")))
+                log("     Text  : %s%s" % (text[:80], "…" if len(text) > 80 else ""))
 
                 try:
                     text_to_wav(text, voice, audio_path)
                     mb = os.path.getsize(audio_path) / 1_000_000
-                    log(f"     ✓ Audio generated ({mb:.2f} MB)")
+                    log("     ✓ Audio generated (%.2f MB)" % mb)
                 except Exception as exc:
                     return error_response(job_id, "tts", exc, {"voice": voice})
 
             elif audio_url:
-                log(f"  🎵 Audio URL mode")
+                log("  🎵 Audio URL mode")
                 aud_ext = Path(audio_url.split("?")[0]).suffix or ".wav"
-                raw_audio = str(tmp / f"raw_audio{aud_ext}")
+                raw_audio = str(tmp / ("raw_audio" + aud_ext))
 
                 try:
                     download_file(audio_url, raw_audio)
@@ -308,7 +313,6 @@ def handler(job: dict) -> dict:
                         shutil.copy(raw_audio, audio_path)
                 except Exception as exc:
                     return error_response(job_id, "audio_convert", exc)
-
             else:
                 return {
                     "error": "Provide either 'text' (TTS) or 'audio_url' (audio file)",
@@ -318,7 +322,7 @@ def handler(job: dict) -> dict:
                 }
 
             # ── 3. FLOAT parameters ───────────────────────────────
-            output_path = str(Path(OUTPUT_DIR) / f"{job_id}.mp4")
+            output_path = str(Path(OUTPUT_DIR) / ("%s.mp4" % job_id))
             emotion = inp.get("emotion")
             no_crop = bool(inp.get("no_crop", False))
             a_cfg_scale = float(inp.get("a_cfg_scale", 2.0))
@@ -327,10 +331,10 @@ def handler(job: dict) -> dict:
             nfe = int(inp.get("nfe", 10))
             seed = int(inp.get("seed", 25))
 
-            log(f"\n  emotion     : {emotion or 'S2E (auto)'}")
-            log(f"  nfe         : {nfe}  (flow steps)")
-            log(f"  a_cfg_scale : {a_cfg_scale}")
-            log(f"  e_cfg_scale : {e_cfg_scale}")
+            log("\n  emotion     : %s" % (emotion or "S2E (auto)"))
+            log("  nfe         : %s  (flow steps)" % nfe)
+            log("  a_cfg_scale : %s" % a_cfg_scale)
+            log("  e_cfg_scale : %s" % e_cfg_scale)
 
             # ── 4. Build CLI command ──────────────────────────────
             cmd = [
@@ -350,7 +354,7 @@ def handler(job: dict) -> dict:
             if no_crop:
                 cmd.append("--no_crop")
 
-            log(f"\n  Command:\n  {' '.join(cmd)}\n")
+            log("\n  Command:\n  %s\n" % " ".join(cmd))
 
             # ── 5. Run generation ────────────────────────────────
             log("  🚀 Launching FLOAT…\n")
@@ -362,11 +366,11 @@ def handler(job: dict) -> dict:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
-                    env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                    env=dict(os.environ, PYTHONUNBUFFERED="1"),
                 )
 
                 start = time.time()
-                lines = []
+                lines: List[str] = []
 
                 assert proc.stdout is not None
                 for line in proc.stdout:
@@ -381,7 +385,7 @@ def handler(job: dict) -> dict:
                         except Exception:
                             proc.kill()
                         return {
-                            "error": f"Timed out after {GENERATION_TIMEOUT}s",
+                            "error": "Timed out after %ds" % GENERATION_TIMEOUT,
                             "job_id": job_id,
                             "stage": "generation_timeout",
                         }
@@ -391,7 +395,7 @@ def handler(job: dict) -> dict:
             except Exception as exc:
                 return error_response(job_id, "generation_subprocess", exc)
 
-            log(f"\n  Return code: {return_code}")
+            log("\n  Return code: %s" % return_code)
 
             if return_code != 0:
                 return {
@@ -413,7 +417,7 @@ def handler(job: dict) -> dict:
                     "stage": "output_missing",
                 }
 
-            log(f"  ✓ Output: {video_path}")
+            log("  ✓ Output: %s" % video_path)
 
             # ── 7. Upload ─────────────────────────────────────────
             try:
