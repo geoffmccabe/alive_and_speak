@@ -49,6 +49,7 @@ import subprocess
 import tempfile
 import requests
 from pathlib import Path
+from typing import Optional
 
 import runpod
 
@@ -205,7 +206,7 @@ def upload_video(video_path: str, job_id: str) -> dict:
     }
 
 
-def find_output_video(path: str) -> str | None:
+def find_output_video(path: str) -> Optional[str]:
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return path
     stem = Path(path).stem
