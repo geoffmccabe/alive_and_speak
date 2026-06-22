@@ -50,101 +50,14 @@ RUN pip install \
         "runpod==1.6.2" \
         requests
 
-# ─────────────────────────────────────────────────────────────────
-#  Download all models into /app/checkpoints/
-#
-#  1. float.pth                                        ~789 MB  Google Drive
-#  2. wav2vec2-base-960h/                              ~360 MB  HuggingFace
-#       config.json, model.safetensors, preprocessor_config.json,
-#       tokenizer_config.json, vocab.json, special_tokens_map.json
-#  3. wav2vec-english-speech-emotion-recognition/      ~360 MB  HuggingFace
-#       config.json, pytorch_model.bin, preprocessor_config.json
-# ─────────────────────────────────────────────────────────────────
+# ── Download HuggingFace models via script (avoids heredoc issues) 
 RUN mkdir -p /app/checkpoints
+COPY download_models.py /tmp/download_models.py
+RUN python /tmp/download_models.py
 
-# 1. float.pth — main FLOAT model
+# ── Download float.pth from Google Drive (~789 MB) ────────────────
 RUN gdown "1rvWuM12cyvNvBQNCLmG4Fr2L1rpjQBF0" \
         -O /app/checkpoints/float.pth
-
-# 2. wav2vec2-base-960h — audio feature encoder (all files)
-RUN python - << 'PYEOF'
-from huggingface_hub import hf_hub_download
-import os
-
-repo  = "facebook/wav2vec2-base-960h"
-dest  = "/app/checkpoints/wav2vec2-base-960h"
-files = [
-    "config.json",
-    "model.safetensors",
-    "preprocessor_config.json",
-    "tokenizer_config.json",
-    "vocab.json",
-    "special_tokens_map.json",
-]
-os.makedirs(dest, exist_ok=True)
-for f in files:
-    try:
-        path = hf_hub_download(repo_id=repo, filename=f, local_dir=dest)
-        print(f"  ✓  {f}")
-    except Exception as e:
-        print(f"  ⚠  {f}: {e}")
-PYEOF
-
-# 3. wav2vec-english-speech-emotion-recognition — emotion model (all files)
-RUN python - << 'PYEOF'
-from huggingface_hub import hf_hub_download
-import os
-
-repo  = "r-f/wav2vec-english-speech-emotion-recognition"
-dest  = "/app/checkpoints/wav2vec-english-speech-emotion-recognition"
-files = [
-    "config.json",
-    "pytorch_model.bin",
-    "preprocessor_config.json",
-]
-os.makedirs(dest, exist_ok=True)
-for f in files:
-    try:
-        path = hf_hub_download(repo_id=repo, filename=f, local_dir=dest)
-        print(f"  ✓  {f}")
-    except Exception as e:
-        print(f"  ⚠  {f}: {e}")
-PYEOF
-
-# ── Verify all files are present before finishing build ───────────
-RUN python - << 'PYEOF'
-import os, sys
-
-ckpts = "/app/checkpoints"
-required = [
-    "float.pth",
-    "wav2vec2-base-960h/config.json",
-    "wav2vec2-base-960h/model.safetensors",
-    "wav2vec2-base-960h/preprocessor_config.json",
-    "wav2vec2-base-960h/tokenizer_config.json",
-    "wav2vec2-base-960h/vocab.json",
-    "wav2vec2-base-960h/special_tokens_map.json",
-    "wav2vec-english-speech-emotion-recognition/config.json",
-    "wav2vec-english-speech-emotion-recognition/pytorch_model.bin",
-    "wav2vec-english-speech-emotion-recognition/preprocessor_config.json",
-]
-
-missing = []
-for f in required:
-    path = os.path.join(ckpts, f)
-    if os.path.exists(path):
-        mb = os.path.getsize(path) / 1_000_000
-        print(f"  ✓  {f}  ({mb:.1f} MB)")
-    else:
-        print(f"  ✗  MISSING: {f}")
-        missing.append(f)
-
-if missing:
-    print(f"\nBUILD FAILED: {len(missing)} required file(s) missing.")
-    sys.exit(1)
-else:
-    print("\nAll model files verified — build complete.")
-PYEOF
 
 # ── Runtime directories ──────────────────────────────────────────
 RUN mkdir -p /tmp/float_outputs /comfyui/ComfyUI
