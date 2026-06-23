@@ -1,6 +1,6 @@
 """
 RunPod Serverless Handler – FLOAT + edge-tts
-Compatible with older Python runtimes (no PEP 604 union syntax).
+Compatible with older Python runtim(no PEP 604 union syntax).
 
 Two input modes:
   A) Text → edge-tts → audio → FLOAT → video
