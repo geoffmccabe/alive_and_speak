@@ -3,7 +3,7 @@ RunPod Serverless Handler – FLOAT + edge-tts
 Compatible with older Python runtim(no PEP 604 union syntax).
 
 Two input modes:
-  A) Text → edge-tts → audio → FLOAT → video
+  A) Text → edge-ts → audio → FLOAT → video
   B) Audio URL → FLOAT → video
 """
 
