@@ -3,7 +3,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #  FLOAT – RunPod Serverless Image (CPU)
 #  All models baked in — no volume needed for inference.
-#  edge-tts included: text + voice → audio → talking portrait video
+#  edge-tts included: text + voice audio → talking portrait video
 # ═══════════════════════════════════════════════════════════════════
 
 FROM python:3.8-slim-bullseye
