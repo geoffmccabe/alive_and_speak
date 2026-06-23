@@ -29,7 +29,7 @@ RUN pip install \
         torchaudio==2.0.2+cpu \
         --index-url https://download.pytorch.org/whl/cpu
 
-# ──  FLOAT repo ──────────────────────────────────────────────
+
 WORKDIR /app
 RUN git clone --depth 1 \
         https://github.com/saif816/float /app
