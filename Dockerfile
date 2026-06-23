@@ -2,7 +2,7 @@
 
 # ═══════════════════════════════════════════════════════════════════
 #  FLOAT – RunPod Serverless Image (CPU)
-#  All models baked in — no volume needed for inference.
+#  All models baked in — no vtttolume needed for inference.
 #  edge-tts included: text + voice audio → talking portrait video
 # ═══════════════════════════════════════════════════════════════════
 
