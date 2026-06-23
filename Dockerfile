@@ -28,7 +28,7 @@ RUN pip install \
         torchaudio==2.0.2+cpu \
         --index-url https://download.pytorch.org/whl/cpu
 
-# ── Clone FLOAT repo ──────────────────────────────────────────────
+# ──  FLOAT repo ──────────────────────────────────────────────
 
 WORKDIR /app
 RUN git clone --depth 1 \
