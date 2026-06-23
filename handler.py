@@ -1,6 +1,6 @@
 """
 RunPod Serverless Handler – FLOAT + edge-tts
-Output: base64-encoded MP4 returned directly in the job response.
+Output: base64-en returned directly in the job response.
 """
 
 import os
