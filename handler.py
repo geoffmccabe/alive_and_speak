@@ -1,7 +1,4 @@
-"""
-RunPod Serverless Handler – FLOAT + edge-tts
-Output: base64-en returned directly in the job response.
-"""
+
 
 import os
 import sys
