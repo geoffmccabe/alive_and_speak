@@ -1,16 +1,16 @@
-
 # ═══════════════════════════════════════════════════════════════════
-#  FLOAT – RunPod Serverless Image
-#  All models baked in — no volume needed for inference.
-#  edge-tts included: text + voice → audio → talking portrait video
+#  FLOAT – RunPod Serverless — CPU-only build
+#  No CUDA required. Runs on cheap CPU workers.
+#  Cost: ~$0.001–0.003 per generation vs ~$0.04 on GPU.
+#  Speed: ~2–4 min per video on CPU vs ~35 sec on GPU.
 # ═══════════════════════════════════════════════════════════════════
-FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# ── System packages + Python 3.8 via deadsnakes PPA ──────────────
+# ── System packages + Python 3.8 ─────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa -y \
@@ -23,24 +23,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Python 3.8 as default + pip (must use 3.8-specific URL) ──────
+# ── Python 3.8 as default + pip ──────────────────────────────────
 RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.8 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1 \
     && wget -q https://bootstrap.pypa.io/pip/3.8/get-pip.py -O /tmp/get-pip.py \
     && python3.8 /tmp/get-pip.py \
     && rm /tmp/get-pip.py
 
-# ── PyTorch 2.0.1 + CUDA 11.8 ────────────────────────────────────
+# ── PyTorch CPU-only (much smaller, no CUDA) ──────────────────────
 RUN pip install \
         torch==2.0.1 \
         torchvision==0.15.2 \
         torchaudio==2.0.2 \
-        --index-url https://download.pytorch.org/whl/cu118
+        --index-url https://download.pytorch.org/whl/cpu
 
-# ── Clone FLOAT repo ─────────────────────────────────────────────
+# ── Clone your FLOAT fork (with CPU generate.py changes) ─────────
 WORKDIR /app
 RUN git clone --depth 1 \
-        https://github.com/deepbrainai-research/float /app
+        https://github.com/saif816/float /app
+
+# ── Copy the CPU-patched generate.py over the original ───────────
+COPY generate.py /app/generate.py
 
 # ── All Python dependencies ───────────────────────────────────────
 RUN pip install -r /app/requirements.txt
@@ -51,12 +54,12 @@ RUN pip install \
         "runpod==1.6.2" \
         requests
 
-# ── Download HuggingFace models via script (avoids heredoc issues) 
+# ── Download all models into image ───────────────────────────────
 RUN mkdir -p /app/checkpoints
 COPY download_models.py /tmp/download_models.py
 RUN python /tmp/download_models.py
 
-# ── Download float.pth from Google Drive (~789 MB) ────────────────
+# float.pth from Google Drive
 RUN gdown "1rvWuM12cyvNvBQNCLmG4Fr2L1rpjQBF0" \
         -O /app/checkpoints/float.pth
 
