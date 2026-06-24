@@ -25,11 +25,12 @@ RUN pip install \
 
 WORKDIR /app
 
-# IMPORTANT:
-# Replace this with YOUR patched FLOAT fork URL.
-# The build context does not contain models/float/* files, so they must come from this clone.
-RUN git clone --depth 1 \
-        https://github.com/saif816/float /app
+# Replace this with your patched FLOAT fork
+ARG FLOAT_REPO=https://github.com/YOUR_USERNAME/float.git
+ARG FLOAT_REF=main
+
+RUN git clone --depth 1 --branch "${FLOAT_REF}" "${FLOAT_REPO}" /app \
+    && git -C /app rev-parse HEAD
 
 RUN pip install -r /app/requirements.txt
 RUN pip install \
@@ -48,7 +49,6 @@ RUN gdown "1rvWuM12cyvNvBQNCLmG4Fr2L1rpjQBF0" \
 
 RUN mkdir -p /tmp/float_outputs /comfyui/ComfyUI
 
-# These files DO exist in your RunPod repo build context
 COPY handler.py /app/handler.py
 COPY start.sh /start.sh
 COPY extra_model_paths.yaml /comfyui/extra_model_paths.yaml
