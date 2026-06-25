@@ -25,22 +25,58 @@ RUN pip install \
 
 WORKDIR /app
 
-# Replace this with your patched FLOAT fork
-ARG FLOAT_REPO=https://github.com/YOUR_USERNAME/float.git
-ARG FLOAT_REF=main
+# Force fresh clone
+ARG CACHE_BUST=20260624
 
-RUN git clone --depth 1 --branch "${FLOAT_REF}" "${FLOAT_REPO}" /app \
-    && git -C /app rev-parse HEAD
+RUN git clone --depth 1 https://github.com/saif816/float /app
+
+# ------------------------------
+# PATCH FLOAT AUTOMATICALLY
+# ------------------------------
+
+# Replace opt.device -> cpu
+RUN sed -i 's/opt.device/"cpu"/g' /app/models/float/FMT.py || true
+
+# Inject opt.device after parse_args()
+RUN python - <<'PY'
+from pathlib import Path
+
+f = Path("/app/generate.py")
+
+txt = f.read_text()
+
+old = "opt = parser.parse_args()"
+
+new = """
+opt = parser.parse_args()
+
+import torch
+if not hasattr(opt, 'device'):
+    opt.device = torch.device('cpu')
+"""
+
+if old in txt:
+    txt = txt.replace(old, new)
+
+f.write_text(txt)
+print("generate.py patched")
+PY
+
+# Verify patch
+RUN grep -n "device" /app/generate.py || true
+RUN grep -n "cpu" /app/models/float/FMT.py || true
 
 RUN pip install -r /app/requirements.txt
+
 RUN pip install \
         "huggingface_hub[cli]" \
         gdown \
         edge-tts \
-        "runpod==1.6.2" \
+        runpod==1.6.2 \
         requests
 
 RUN mkdir -p /app/checkpoints
+
 COPY download_models.py /tmp/download_models.py
 RUN python /tmp/download_models.py
 
