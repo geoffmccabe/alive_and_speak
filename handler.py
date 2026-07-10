@@ -1,43 +1,4 @@
-"""
-RunPod Serverless Handler – FLOAT + edge-tts + Voice Effects
-Supports normal TTS voices, monster presets, and robot voice.
 
-INPUT FORMAT:
-{
-  "input": {
-    "image_url":   "https://...",          # REQUIRED
-    "text":        "Hello world",          # use text OR audio_url
-    "audio_url":   "https://.../audio.wav",
-
-    # ── TTS voice (used when text is provided) ────────────────
-    "voice": "en-GB-RyanNeural",           # see VOICES dict below
-
-    # ── Voice effect (applied after TTS or audio download) ────
-    # "none"      → no effect, clean voice (default)
-    # "ogre"      → light growl, -5 semitones
-    # "troll"     → medium growl, -7 semitones
-    # "demon"     → heavy growl, -10 semitones
-    # "abyss"     → extreme deep demon, -12 semitones
-    # "robot"     → robotic vocoder effect
-    "voice_effect": "none",
-
-    # ── Monster effect fine-tuning (optional overrides) ───────
-    "pitch_shift_semitones": -7,
-    "speed_factor":          0.92,
-    "growl_layers":          2,
-    "distortion_amount":     0.15,
-
-    # ── FLOAT generation params ───────────────────────────────
-    "emotion":     null,
-    "no_crop":     false,
-    "a_cfg_scale": 2.0,
-    "e_cfg_scale": 1.0,
-    "r_cfg_scale": 1.0,
-    "nfe":         10,
-    "seed":        25
-  }
-}
-"""
 
 import os
 import sys
