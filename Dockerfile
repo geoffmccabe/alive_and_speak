@@ -73,8 +73,10 @@ RUN pip install \
         gdown \
         edge-tts \
         runpod==1.6.2 \
-        requests
-
+        requests \
+        librosa \
+        soundfile \
+        pydub
 RUN mkdir -p /app/checkpoints
 
 COPY download_models.py /tmp/download_models.py
