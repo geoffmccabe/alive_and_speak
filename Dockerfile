@@ -28,16 +28,13 @@ WORKDIR /app
 # Force fresh clone
 ARG CACHE_BUST=20260624
 
+
 RUN git clone --depth 1 https://github.com/saif816/float /app
 
-# ------------------------------
-# PATCH FLOAT AUTOMATICALLY
-# ------------------------------
 
-# Replace opt.device -> cpu
 RUN sed -i 's/opt.device/"cpu"/g' /app/models/float/FMT.py || true
 
-# Inject opt.device after parse_args()
+
 RUN python - <<'PY'
 from pathlib import Path
 
