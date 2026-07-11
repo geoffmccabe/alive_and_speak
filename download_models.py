@@ -1,6 +1,4 @@
-"""
-Downloads all FLOAT model files into /app/checkpoints/ during Docker build.
-"""
+
 import os
 import sys
 from huggingface_hub import hf_hub_download
