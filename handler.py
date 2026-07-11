@@ -17,7 +17,6 @@ import requests
 import runpod
 
 # ─────────────────────────────────────────────────────────────────
-#  TTS Voices
 # ─────────────────────────────────────────────────────────────────
 VOICES = {
     "en-US-GuyNeural":                 "US Male – neutral, authoritative",
