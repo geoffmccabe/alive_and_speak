@@ -22,9 +22,11 @@ WORKDIR /app
 # Force fresh clone
 ARG CACHE_BUST=20260624
 RUN git clone --depth 1 https://github.com/saif816/float /app
-# ── Patch FMT.py: inject self.opt = opt before it is used ────────
-COPY patch_fmt.py /tmp/patch_fmt.py
-RUN python /tmp/patch_fmt.py
+# ── Replace FMT.py with corrected version (self.opt = opt in right place) ──
+COPY FMT.py /app/models/float/FMT.py
+
+
+
 
 
 # ------------------------------
